@@ -1,0 +1,114 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// --- ENUMS ---
+enum RoadmapStatus {
+  GENERATING
+  IN_PROGRESS
+  COMPLETED
+}
+
+enum NodeStatus {
+  LOCKED
+  UNLOCKED
+  CLEARED
+}
+
+enum InterviewType {
+  GENERAL_HR
+  TECHNICAL_BOSS
+}
+
+// --- MODELS ---
+
+model User {
+  id            String   @id @default(uuid())
+  email         String   @unique
+  name          String?
+  degree        String?
+  currentYear   String?
+  targetCompany String?
+  targetRole    String?
+  createdAt     DateTime @default(now())
+
+  // Relations
+  resumeScans        ResumeScan[]
+  roadmaps           Roadmap[]
+  codeSubmissions    CodeSubmission[]
+  interviewSessions  InterviewSession[]
+}
+
+model ResumeScan {
+  id               String   @id @default(uuid())
+  userId           String
+  overallAtsScore  Int
+  roast            String
+  missingKeywords  String[]
+  improvementPlan  String[]
+  createdAt        DateTime @default(now())
+
+  user             User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model Roadmap {
+  id             String        @id @default(uuid())
+  userId         String
+  title          String
+  expectedSalary String
+  description    String
+  requiredSkills String[]
+  status         RoadmapStatus @default(IN_PROGRESS)
+  createdAt      DateTime      @default(now())
+
+  user           User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  nodes          RoadmapNode[]
+}
+
+model RoadmapNode {
+  id                String     @id @default(uuid())
+  roadmapId         String
+  sequenceIndex     Int        // To keep them in order (1, 2, 3...)
+  phaseTitle        String     // e.g., "Phase 01"
+  chapterTitle      String     // e.g., "Arrays & Hashing"
+  notes             String     // Architect Briefing
+  assignmentPrompt  String     // The Trial
+  youtubeSearchTerm String
+  status            NodeStatus @default(LOCKED)
+
+  roadmap           Roadmap    @relation(fields: [roadmapId], references: [id], onDelete: Cascade)
+  submissions       CodeSubmission[]
+}
+
+model CodeSubmission {
+  id          String   @id @default(uuid())
+  userId      String
+  nodeId      String
+  codeWritten String
+  aiFeedback  String
+  score       Int
+  passed      Boolean
+  createdAt   DateTime @default(now())
+
+  user        User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  node        RoadmapNode  @relation(fields: [nodeId], references: [id], onDelete: Cascade)
+}
+
+model InterviewSession {
+  id            String        @id @default(uuid())
+  userId        String
+  interviewType InterviewType
+  transcript    Json          // Stores the exact chat history array
+  finalScore    Int?
+  summary       String?
+  strengths     String[]
+  weaknesses    String[]
+  createdAt     DateTime      @default(now())
+
+  user          User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
