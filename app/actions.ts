@@ -5,6 +5,7 @@ import Groq from 'groq-sdk';
 import prisma from '../lib/db'; 
 import * as acorn from 'acorn';
 import * as walk from 'acorn-walk';
+import bcrypt from 'bcryptjs'; // <-- NEW: Injected for secure password hashing
 
 const ai = new GoogleGenAI({});
 const groq = new Groq({ apiKey: process.env.GROQ_API_KEY }); 
@@ -145,7 +146,7 @@ export async function generateRoadmapAction(formData: any, hasResume: boolean, u
       });
     });
 
-    // --- SAVE TO SUPABASE VIA PRISMA ---
+    // --- SAVE TO DATABASE VIA PRISMA ---
     try {
       const user = await prisma.user.upsert({
         where: { id: userId },
@@ -426,7 +427,6 @@ export async function conductInterviewAction(
 }
 
 // --- ACTION 6: GENERATE FINAL INTERVIEW REPORT & SAVE TO DB ---
-// --- ACTION 6: GENERATE FINAL INTERVIEW REPORT & SAVE TO DB ---
 export async function evaluateInterviewAction(
   chatHistory: any[], 
   targetRole: string, 
@@ -526,7 +526,7 @@ export async function getYouTubeVideoAction(query: string) {
   }
 }
 
-// --- ACTION 8: GENERAL HR & COMMUNICATION INTERVIEW (UPDATED WITH DATA CONTEXT) ---
+// --- ACTION 8: GENERAL HR & COMMUNICATION INTERVIEW ---
 export async function conductGeneralHRAction(
   chatHistory: { role: string; text: string }[], 
   targetRole: string,
@@ -683,6 +683,7 @@ export async function transcribeAudioAction(formData: FormData) {
     return { success: false, error: error.message };
   }
 }
+
 // --- ACTION 13: THE BLACK HOLE (ENDLESS LEETCODE GENERATOR) ---
 export async function generateArenaQuestionAction(difficulty: string) {
   try {
@@ -709,5 +710,49 @@ export async function generateArenaQuestionAction(difficulty: string) {
   } catch (error: any) {
     console.error("Arena Generation Error:", error.message);
     return { success: false, error: error.message };
+  }
+}
+
+// --- ACTION 14: SECURE USER SIGNUP (AUTH.JS / NEON EDITION) ---
+export async function signUpAction(formData: FormData) {
+  try {
+    const email = formData.get('email') as string;
+    const password = formData.get('password') as string;
+    const name = formData.get('fullName') as string;
+
+    if (!email || !password || !name) {
+      return { success: false, error: "Missing required telemetry fields." };
+    }
+
+    // 1. Check if the candidate already exists in the Neon DB
+    const existingUser = await prisma.user.findUnique({
+      where: { email },
+    });
+
+    if (existingUser) {
+      return { success: false, error: "A profile with this Auth Sync ID already exists." };
+    }
+
+    // 2. Encrypt the password (Cost factor 10)
+    const hashedPassword = await bcrypt.hash(password, 10);
+
+    // 3. Forge the user in the database
+    await prisma.user.create({
+      data: {
+        email,
+        password: hashedPassword,
+        name,
+        // Give them some default setup so the DB doesn't complain later
+        targetCompany: "FAANG",
+        targetRole: "Software Engineer",
+      }
+    });
+
+    console.log(`Server Action: Successfully forged new user profile for ${email}`);
+    return { success: true };
+
+  } catch (error: any) {
+    console.error("Sign up error:", error);
+    return { success: false, error: "Critical database insertion failure." };
   }
 }

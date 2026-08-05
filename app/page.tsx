@@ -3,7 +3,9 @@
 import Editor from '@monaco-editor/react';
 import { useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
-import { supabase } from '../lib/supabase'; 
+
+// --- NEW AUTH.JS IMPORTS ---
+import { useSession, signOut } from 'next-auth/react'; 
 
 import { generateRoadmapAction, gradeAssignmentAction, evaluateInterviewAction, getYouTubeVideoAction, getUserRoadmapAction, saveCodeSubmissionAction } from './actions'; 
 import dynamic from 'next/dynamic';
@@ -29,21 +31,16 @@ interface LearningResources { free_track: any[]; premium_track: any[]; }
 
 export default function StudentOnboarding() {
   const router = useRouter();
-  const [user, setUser] = useState<any>(null);
+  
+  // --- AUTH.JS SESSION MANAGEMENT ---
+  const { data: session, status } = useSession();
+  const user = session?.user;
 
   useEffect(() => {
-    const checkUser = async () => {
-      const { data: { session } } = await supabase.auth.getSession();
-      
-      if (!session) {
-        router.push('/login');
-      } else {
-        setUser(session.user);
-      }
-    };
-
-    checkUser();
-  }, [router]);
+    if (status === 'unauthenticated') {
+      router.push('/login');
+    }
+  }, [status, router]);
 
   const [formData, setFormData] = useState({ degree: '', currentYear: '3rd Year', targetCompany: '', targetRole: '' });
   const [isGenerating, setIsGenerating] = useState(false);
@@ -69,10 +66,10 @@ export default function StudentOnboarding() {
   const [currentVideoId, setCurrentVideoId] = useState<string | null>(null);
 
   useEffect(() => {
-    if (!user) return; 
+    if (!user?.id) return; 
 
     const loadSavedRoadmap = async () => {
-      const response = await getUserRoadmapAction(user.id);
+      const response = await getUserRoadmapAction(user.id as string);
       
       if (response.success && response.roadmap) {
         setJobProfile({
@@ -137,12 +134,12 @@ export default function StudentOnboarding() {
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!formData.targetCompany || !formData.targetRole) return alert("Fill out target enterprise and role.");
+    if (!formData.targetCompany || !formData.targetRole || !user?.id || !user?.email) return alert("Fill out target enterprise and role.");
     
     setIsGenerating(true);
     try {
       const customFormData = { ...formData, missingSkills: "None" }; 
-      const result = await generateRoadmapAction(customFormData as any, false, user.id, user.email);
+      const result = await generateRoadmapAction(customFormData as any, false, user.id as string, user.email);
       if (result.success && result.gameData) {
         setJobProfile(result.gameData.jobProfile);
         setModules(result.gameData.modules);
@@ -170,7 +167,7 @@ export default function StudentOnboarding() {
   };
 
   const handleSubmitAssignment = async () => {
-    if (!studentAnswer || !levels || selectedLevelIndex === null) return;
+    if (!studentAnswer || !levels || selectedLevelIndex === null || !user?.id) return;
     setIsGrading(true);
     try {
       let rawPrompts = levels[selectedLevelIndex].assignment_prompt;
@@ -196,7 +193,7 @@ export default function StudentOnboarding() {
           response.result.feedback, 
           response.result.score, 
           effectivelyPassedNode, 
-          user.id
+          user.id as string
         );
 
         if (response.result.passed) {
@@ -217,12 +214,13 @@ export default function StudentOnboarding() {
   };
 
   const handleInterviewComplete = async (transcript: any[], biometrics?: any) => {
+    if (!user?.id) return;
     const wasGeneralHR = showGeneralHR; 
     setShowInterview(false);
     setShowGeneralHR(false);
     setIsEvaluating(true);
     try {
-      const result = await evaluateInterviewAction(transcript, formData.targetRole, wasGeneralHR, user.id, biometrics);
+      const result = await evaluateInterviewAction(transcript, formData.targetRole, wasGeneralHR, user.id as string, biometrics);
       if (result.success) setInterviewReport(result.report);
     } catch (error) { 
       console.error(error); 
@@ -231,7 +229,8 @@ export default function StudentOnboarding() {
     }
   };
 
-  if (!user) {
+  // Wait until Auth.js confirms session state
+  if (status === 'loading' || !user) {
     return (
       <div className="min-h-screen bg-[#050505] flex flex-col items-center justify-center relative overflow-hidden">
         <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[40rem] h-[40rem] bg-[#0071e3]/10 rounded-full blur-[120px] animate-pulse"></div>
@@ -262,10 +261,7 @@ export default function StudentOnboarding() {
           )}
 
           <button 
-            onClick={async () => {
-              await supabase.auth.signOut();
-              router.push('/login');
-            }} 
+            onClick={() => signOut({ callbackUrl: '/login' })} 
             className="text-xs font-bold text-[#ff3b30] hover:text-white uppercase tracking-widest bg-[#ff3b30]/10 hover:bg-[#ff3b30]/80 px-6 py-2.5 rounded-full border border-[#ff3b30]/20 transition-all duration-300 backdrop-blur-md"
           >
             Exit
@@ -526,12 +522,10 @@ export default function StudentOnboarding() {
                             </div>
                           </div>
                           
-                          {/* FIX: Added min-h-0 so the editor correctly shrinks to available vertical space */}
                           <div className="flex-1 relative min-h-0">
                             <Editor height="100%" defaultLanguage="javascript" theme="vs-dark" value={studentAnswer} onChange={(val) => setStudentAnswer(val || "")} options={{ minimap: { enabled: false }, padding: { top: 32 }, fontSize: 16, fontFamily: 'monospace' }} />
                           </div>
                           
-                          {/* FIX: Separated the scrollable feedback from the sticky button so the button is always visible */}
                           <div className="bg-black/60 backdrop-blur-2xl border-t border-white/10 shrink-0 z-10 flex flex-col shadow-[0_-10px_40px_rgba(0,0,0,0.5)]">
                             
                             {graderFeedback && (

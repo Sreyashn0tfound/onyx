@@ -7,7 +7,9 @@ import { Canvas, useFrame } from '@react-three/fiber';
 import { Stars, Float, useGLTF, Clone } from '@react-three/drei';
 import { EffectComposer, Bloom } from '@react-three/postprocessing';
 import { useRef, useState, Suspense } from 'react';
-import { createBrowserClient } from '@supabase/ssr';
+
+// --- NEW AUTH IMPORT ---
+import { signIn } from 'next-auth/react';
 
 // --- DRIFTING BACKGROUND SATELLITE ---
 const DriftingSatellite = () => {
@@ -38,35 +40,30 @@ export default function LoginPage() {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   
-  // --- SUPABASE AUTH STATES ---
+  // --- AUTH.JS STATES ---
   const [error, setError] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
-  
-  // Initialize Supabase Client
-  const supabase = createBrowserClient(
-    process.env.NEXT_PUBLIC_SUPABASE_URL!,
-    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
-  );
 
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
     setIsLoading(true);
     setError(null);
 
-    // Attempt to authenticate
-    const { error } = await supabase.auth.signInWithPassword({
+    // Attempt to authenticate using Auth.js Credentials Provider
+    const res = await signIn('credentials', {
+      redirect: false,
       email,
       password,
     });
 
-    if (error) {
+    if (res?.error) {
       // Auth failed
-      setError(error.message);
+      setError("Invalid credentials. Please verify your Auth Sync ID and Encryption Key.");
       setIsLoading(false);
     } else {
       // Auth success! Blast them to the dashboard
       router.push('/dashboard');
-      router.refresh(); // Refreshes server components to reflect the new auth state
+      router.refresh(); 
     }
   };
 
@@ -109,7 +106,7 @@ export default function LoginPage() {
 
         <div className="bg-[#0a0a0a]/60 backdrop-blur-3xl border border-white/10 p-8 rounded-[2rem] shadow-2xl">
           
-          {/* DISPLAY SUPABASE ERRORS HERE */}
+          {/* DISPLAY AUTH.JS ERRORS HERE */}
           {error && (
             <div className="mb-6 p-4 bg-red-500/10 border border-red-500/30 rounded-xl flex items-center gap-3 animate-in fade-in">
               <span className="text-red-500 text-sm">⚠️</span>

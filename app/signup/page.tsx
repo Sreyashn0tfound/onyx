@@ -7,7 +7,10 @@ import { Canvas, useFrame } from '@react-three/fiber';
 import { Stars, Float } from '@react-three/drei';
 import { EffectComposer, Bloom } from '@react-three/postprocessing';
 import { useRef, useState, Suspense } from 'react';
-import { createBrowserClient } from '@supabase/ssr';
+
+// --- NEW AUTH IMPORTS ---
+import { signIn } from 'next-auth/react';
+import { signUpAction } from '@/app/actions';
 
 // --- INSTANT-LOAD 3D BACKGROUND: THE CREATION CORE ---
 const CreationCore = () => {
@@ -64,16 +67,10 @@ export default function SignupPage() {
   const [password, setPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
   
-  // --- SUPABASE AUTH STATES ---
+  // --- AUTH.JS STATES ---
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
-  
-  // Initialize Supabase Client
-  const supabase = createBrowserClient(
-    process.env.NEXT_PUBLIC_SUPABASE_URL!,
-    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
-  );
 
   const handleSignup = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -94,31 +91,34 @@ export default function SignupPage() {
       return;
     }
 
-    // 2. Execute Supabase Signup
-    const { data, error } = await supabase.auth.signUp({
-      email,
-      password,
-      options: {
-        data: {
-          full_name: fullName, // Save their name to the auth.users metadata
-        }
-      }
-    });
+    // 2. Execute Auth.js Manual Signup Action
+    const formData = new FormData();
+    formData.append('email', email);
+    formData.append('password', password);
+    formData.append('fullName', fullName);
 
-    if (error) {
-      setError(error.message);
+    const res = await signUpAction(formData);
+
+    if (!res.success) {
+      setError(res.error || "Profile initialization failed.");
       setIsLoading(false);
     } else {
-      // SUCCESS!
-      // Note: If you have "Confirm Email" turned ON in Supabase, they won't be logged in yet.
-      if (data.session) {
-        // Logged in immediately
+      // 3. SUCCESS! Auto-login the user immediately using Auth.js
+      setSuccess("Profile forged. Initiating automatic uplink...");
+      
+      const signInRes = await signIn('credentials', {
+        redirect: false,
+        email,
+        password,
+      });
+
+      if (signInRes?.error) {
+        // Fallback if auto-login bugs out
+        setTimeout(() => router.push('/login'), 1500);
+      } else {
+        // Blasted straight to the dashboard
         router.push('/dashboard');
         router.refresh();
-      } else {
-        // Requires email verification
-        setSuccess("Profile initialized. Check your telemetry (inbox) to verify your clearance.");
-        setIsLoading(false);
       }
     }
   };
@@ -146,7 +146,6 @@ export default function SignupPage() {
       </div>
 
       {/* --- THE GLASSMORPHIC TERMINAL --- */}
-      {/* Pushed to the right using md:ml-auto md:mr-[10%] to balance the 3D core on the left */}
       <div className="relative z-10 w-full max-w-md px-6 md:ml-auto md:mr-[10%] animate-in fade-in slide-in-from-right-8 duration-1000">
         
         <div className="flex flex-col mb-8 text-left">
@@ -161,7 +160,7 @@ export default function SignupPage() {
 
         <div className="bg-[#0a0a0a]/60 backdrop-blur-3xl border border-white/10 p-8 rounded-[2rem] shadow-2xl">
           
-          {/* SUPABASE ERRORS */}
+          {/* AUTH ERRORS */}
           {error && (
             <div className="mb-6 p-4 bg-red-500/10 border border-red-500/30 rounded-xl flex items-center gap-3 animate-in fade-in">
               <span className="text-red-500 text-sm">⚠️</span>
@@ -169,7 +168,7 @@ export default function SignupPage() {
             </div>
           )}
 
-          {/* SUPABASE SUCCESS (For Email Verification) */}
+          {/* AUTH SUCCESS (Uplink Transition) */}
           {success && (
             <div className="mb-6 p-4 bg-green-500/10 border border-green-500/30 rounded-xl flex items-center gap-3 animate-in fade-in">
               <span className="text-green-500 text-sm">✓</span>
