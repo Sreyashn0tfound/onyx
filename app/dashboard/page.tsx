@@ -6,8 +6,10 @@ import { useGLTF, OrbitControls, Stars, Resize, Center, Html } from '@react-thre
 import { EffectComposer, Bloom } from '@react-three/postprocessing';
 import * as THREE from 'three';
 import { useRouter } from 'next/navigation';
+import { useSession } from 'next-auth/react'; 
 
-import { generateRoadmapAction } from '@/app/actions'; 
+import { generateRoadmapAction, resetTelemetryAction } from '@/app/actions'; 
+import PreAssessmentTerminal from '@/app/components/PreAssessmentTerminal'; // 🔥 NEW: Import the Terminal
 
 // 🔥 THE NEW COORDINATES: Sun pushed way back, Moon set up to orbit.
 const SUN_POS: [number, number, number] = [0, 15, -80];
@@ -27,13 +29,12 @@ const ORBITAL_NODES = [
 const MOON_NODE = { id: 99, name: "HR Basecamp", url: "/moon.glb", color: "#e2e8f0", orbitCenter: SUN_POS, orbitRadius: 60, scale: 8, route: "/dashboard/phase/99" };
 
 // 🕳️ THE BLACK HOLE DATA (Massive abyss lurking beneath the solar system)
-// 🕳️ THE BLACK HOLE DATA (Massive abyss lurking beneath the solar system)
 const BLACKHOLE_NODE = { 
   id: 999, 
   name: "The Black Hole Arena", 
   url: "/blackhole.glb", 
   color: "#a855f7", 
-  pos: [0, -80, -120] as [number, number, number], // 🔥 THE FIX: Explicitly cast as a 3-coordinate tuple
+  pos: [0, -80, -120] as [number, number, number], 
   scale: 180,          
   route: "/dashboard/arena" 
 };
@@ -173,7 +174,6 @@ const RoadmapBlackHole = ({ data }: { data: typeof BLACKHOLE_NODE }) => {
 
   useFrame((state, delta) => {
     if (ref.current) {
-      // Aggressive spin for the black hole
       ref.current.rotation.y -= delta * 0.5;
       ref.current.rotation.z -= delta * 0.2;
       const targetScale = hovered ? 1.15 : 1.0;
@@ -191,11 +191,9 @@ const RoadmapBlackHole = ({ data }: { data: typeof BLACKHOLE_NODE }) => {
     >
       <Center><Resize scale={data.scale}><primitive object={copiedScene} /></Resize></Center>
       
-      {/* Expanded gravity glow to match the massive size */}
       <pointLight distance={400} intensity={hovered ? 300 : 150} color={data.color} />
       
       {hovered && (
-        // Adjusted the Y-multiplier to 0.4 so the label stays near the event horizon
         <Html position={[0, (data.scale * 0.4), 0]} center zIndexRange={[100, 0]}>
           <div className="flex flex-col items-center justify-center bg-[#050505]/95 backdrop-blur-md px-6 py-3 rounded-2xl pointer-events-none shadow-2xl" style={{ border: `1px solid ${data.color}80`, boxShadow: `0 0 40px ${data.color}40` }}>
             <span className="text-[10px] font-mono font-bold uppercase tracking-[0.2em] mb-1 text-purple-400 animate-pulse">WARNING: SUPERMASSIVE ANOMALY</span>
@@ -210,7 +208,10 @@ const RoadmapBlackHole = ({ data }: { data: typeof BLACKHOLE_NODE }) => {
 
 export default function Dashboard() {
   const router = useRouter();
-  const [appState, setAppState] = useState<'intake' | 'generating' | 'map'>('intake');
+  const { data: session } = useSession();
+
+  // 🔥 UPDATE: Added 'assessment' to appState lifecycle
+  const [appState, setAppState] = useState<'intake' | 'assessment' | 'generating' | 'map'>('intake');
   const [isFormLocked, setIsFormLocked] = useState(false);
   const [isSimpleMode, setIsSimpleMode] = useState(false);
   
@@ -228,17 +229,63 @@ export default function Dashboard() {
 
   const handleInputChange = (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) => { setFormData({ ...formData, [e.target.name]: e.target.value }); };
 
-  const handleGenerate = async () => {
+  // 🔥 NEW: Trigger Assessment instead of directly generating map
+  const handleStartDiagnostic = () => {
     if (isFormLocked) { setAppState('map'); return; }
+    
+    if (!session?.user?.id) { 
+      alert("Auth Sync Error. Please reload or login again."); 
+      return; 
+    }
+    setAppState('assessment');
+  };
+
+  // 🔥 NEW: Assessment Finishes -> Send Score + Form Data -> Groq Generation
+  const handleCompleteAssessment = async (assessmentData: any) => {
     setAppState('generating');
     try {
-      const result = await generateRoadmapAction(formData, resumeFile !== null, "user_12345", "student@ncet.edu");
+      // We pass the diagnostic score & telemetry alongside the formData
+      const enrichedFormData = {
+        ...formData,
+        diagnosticScore: assessmentData.score,
+        telemetry: assessmentData.telemetry
+      };
+
+      const result = await generateRoadmapAction(
+        enrichedFormData, 
+        resumeFile !== null, 
+        session?.user?.id || '', 
+        session?.user?.email || 'unknown@operative.com'
+      );
+
       if (result.success) {
         setIsFormLocked(true); 
         setAppState('map');
         sessionStorage.setItem('onyx_appState', 'map');
-      } else { alert(`Core Failure: ${result.error}`); setAppState('intake'); }
-    } catch (error) { alert("Critical Connection Lost."); setAppState('intake'); }
+      } else { 
+        alert(`Core Failure: ${result.error}`); 
+        setAppState('intake'); 
+      }
+    } catch (error) { 
+      alert("Critical Connection Lost."); 
+      setAppState('intake'); 
+    }
+  };
+
+  const handleResetTelemetry = async () => {
+    if (!session?.user?.id) {
+      alert("Authentication error. Link severed.");
+      return;
+    }
+    
+    const res = await resetTelemetryAction(session.user.id);
+    if (res.success) {
+      setIsFormLocked(false); 
+      sessionStorage.removeItem('onyx_appState'); 
+      setAppState('intake');
+    } else {
+      alert("Failed to purge telemetry.");
+    }
   };
 
   return (
@@ -253,7 +300,7 @@ export default function Dashboard() {
       {/* DEV TESTING BYPASS BUTTONS */}
       <div className="absolute top-4 right-6 z-50 flex gap-4">
         <button onClick={() => setHighestUnlockedPhase(6)} className="text-[10px] font-mono text-white/20 hover:text-green-500 uppercase tracking-widest transition-colors">[Dev: Unlock All Planets]</button>
-        <button onClick={() => { setIsFormLocked(false); sessionStorage.removeItem('onyx_appState'); }} className="text-[10px] font-mono text-white/20 hover:text-red-500 uppercase tracking-widest transition-colors">[Dev: Reset Telemetry]</button>
+        <button onClick={handleResetTelemetry} className="text-[10px] font-mono text-white/20 hover:text-red-500 uppercase tracking-widest transition-colors">[Dev: Reset Telemetry]</button>
       </div>
 
       {/* GLASSMORPHIC MAP LEGEND */}
@@ -275,7 +322,6 @@ export default function Dashboard() {
               <div className="w-8 h-8 rounded-full bg-yellow-500/20 border border-yellow-500/50 flex items-center justify-center shrink-0"><span className="text-xs font-mono text-yellow-400">★</span></div>
               <p><strong className="text-white block mb-1 uppercase tracking-widest text-[10px]">The Core</strong> Final FAANG Architecture Boss. Unlocks only after Phase 5 is secured.</p>
             </li>
-            {/* 🔥 ADDED THE BLACK HOLE TO THE LEGEND */}
             <li className="flex items-start gap-4">
               <div className="w-8 h-8 rounded-full bg-purple-500/20 border border-purple-500/50 flex items-center justify-center shrink-0"><span className="text-xs font-mono text-purple-400">BH</span></div>
               <p><strong className="text-purple-400 block mb-1 uppercase tracking-widest text-[10px]">The Arena</strong> Endless LeetCode survival mode. Build your global Onyx Elo here.</p>
@@ -293,7 +339,7 @@ export default function Dashboard() {
             <ambientLight intensity={1.5} />
             <Suspense fallback={null}>
               <SpaceSky />
-              {(appState === 'intake' || appState === 'generating') && <IdleSpaceship />}
+              {(appState === 'intake' || appState === 'generating' || appState === 'assessment') && <IdleSpaceship />}
               
               {appState === 'map' && (
                 <>
@@ -308,7 +354,7 @@ export default function Dashboard() {
                 </>
               )}
             </Suspense>
-            <OrbitControls enableZoom={appState === 'map'} enablePan={false} maxDistance={200} minDistance={20} autoRotate={appState === 'intake'} autoRotateSpeed={0.5} />
+            <OrbitControls enableZoom={appState === 'map'} enablePan={false} maxDistance={200} minDistance={20} autoRotate={appState === 'intake' || appState === 'assessment'} autoRotateSpeed={0.5} />
             <EffectComposer><Bloom luminanceThreshold={0.2} intensity={1.5} /></EffectComposer>
           </Canvas>
         )}
@@ -340,7 +386,6 @@ export default function Dashboard() {
               <div className="text-xs uppercase tracking-widest text-gray-400">Enter Orbit</div>
             </div>
 
-            {/* 🔥 Render Black Hole in 2D */}
             <div onClick={() => router.push(BLACKHOLE_NODE.route)} className={`p-6 w-64 rounded-2xl border bg-black/50 backdrop-blur-md transition-all border-white/20 hover:border-purple-500/50 hover:scale-[1.02] cursor-pointer shadow-[inset_0_0_20px_rgba(168,85,247,0.2)]`} style={{ borderTop: `2px solid ${BLACKHOLE_NODE.color}` }}>
               <div className="text-xs font-mono mb-2 animate-pulse" style={{ color: BLACKHOLE_NODE.color }}>ANOMALY DETECTED</div>
               <div className="text-xl font-bold uppercase tracking-tight text-white mb-2">{BLACKHOLE_NODE.name}</div>
@@ -351,19 +396,39 @@ export default function Dashboard() {
         </div>
       )}
 
+      {/* --- 🔥 NEW: DIAGNOSTIC ASSESSMENT TERMINAL OVERLAY --- */}
+      {appState === 'assessment' && (
+        <div className="absolute inset-0 z-50">
+          <PreAssessmentTerminal 
+            targetRole={formData.targetRole || "Software Engineer"} 
+            onComplete={handleCompleteAssessment} 
+          />
+        </div>
+      )}
+
       {/* --- INTAKE UI --- */}
       {appState === 'intake' && (
         <div className="absolute inset-0 z-10 flex items-center justify-end p-16 pointer-events-none">
           <div className="w-[600px] bg-[#0a0a0a]/80 backdrop-blur-xl border border-white/10 p-10 rounded-[2rem] pointer-events-auto shadow-2xl animate-in fade-in slide-in-from-right-8 duration-700 relative overflow-hidden">
             {isFormLocked && <div className="absolute inset-0 bg-black/40 backdrop-blur-[2px] z-10 pointer-events-none border border-[#0a84ff]/30 rounded-[2rem]" />}
+            
             <h1 className="text-4xl font-bold tracking-tighter uppercase mb-2">{isFormLocked ? "Telemetry Locked" : "Initialize Core"}</h1>
             <p className="text-[#a1a1a6] font-mono text-xs tracking-widest uppercase mb-8">{isFormLocked ? "Route already calculated and stored in database." : "Supply telemetry to calculate optimal route."}</p>
+            
             <div className={`space-y-4 mb-8 relative z-0 ${isFormLocked ? 'opacity-50' : ''}`}>
+              
               <input type="text" name="fullName" disabled={isFormLocked} placeholder="Full Name" onChange={handleInputChange} className="w-full p-4 bg-white/5 border border-white/10 rounded-xl focus:border-[#0a84ff] outline-none transition-colors text-sm disabled:cursor-not-allowed" />
+              
+              <div className="flex gap-4">
+                <input type="text" name="github" disabled={isFormLocked} placeholder="GitHub URL" onChange={handleInputChange} className="w-1/2 p-4 bg-white/5 border border-white/10 rounded-xl focus:border-[#0a84ff] outline-none transition-colors text-sm disabled:cursor-not-allowed" />
+                <input type="text" name="linkedin" disabled={isFormLocked} placeholder="LinkedIn URL" onChange={handleInputChange} className="w-1/2 p-4 bg-white/5 border border-white/10 rounded-xl focus:border-[#0a84ff] outline-none transition-colors text-sm disabled:cursor-not-allowed" />
+              </div>
+
               <div className="flex gap-4">
                 <input type="text" name="targetCompany" disabled={isFormLocked} placeholder="Target Enterprise (e.g. Google)" onChange={handleInputChange} className="w-1/2 p-4 bg-white/5 border border-white/10 rounded-xl focus:border-[#bf5af2] outline-none transition-colors text-sm disabled:cursor-not-allowed" />
                 <input type="text" name="targetRole" disabled={isFormLocked} placeholder="Target Role (e.g. SDE)" onChange={handleInputChange} className="w-1/2 p-4 bg-white/5 border border-white/10 rounded-xl focus:border-[#bf5af2] outline-none transition-colors text-sm disabled:cursor-not-allowed" />
               </div>
+
               <select name="currentYear" disabled={isFormLocked} onChange={handleInputChange} defaultValue="3rd Year" className="w-full p-4 bg-white/5 border border-white/10 rounded-xl focus:border-[#bf5af2] outline-none transition-colors text-sm text-[#a1a1a6] disabled:cursor-not-allowed">
                 <option value="1st Year">1st Year (Beginner Protocol)</option>
                 <option value="2nd Year">2nd Year</option>
@@ -371,9 +436,23 @@ export default function Dashboard() {
                 <option value="4th Year">4th Year</option>
                 <option value="Graduated">Graduated</option>
               </select>
+
+              <div className="flex flex-col gap-2 pt-2">
+                <label className="text-[10px] font-mono text-gray-400 uppercase tracking-widest">Upload Resume (PDF/DOCX)</label>
+                <input 
+                  type="file" 
+                  accept=".pdf,.doc,.docx" 
+                  disabled={isFormLocked} 
+                  onChange={(e) => setResumeFile(e.target.files?.[0] || null)} 
+                  className="w-full p-3 bg-white/5 border border-white/10 rounded-xl focus:border-[#0a84ff] outline-none transition-colors text-sm text-gray-300 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-xs file:font-bold file:bg-[#0a84ff] file:text-white hover:file:bg-blue-600 disabled:cursor-not-allowed" 
+                />
+              </div>
+
             </div>
-            <button onClick={handleGenerate} disabled={(!isFormLocked && (!formData.fullName || !formData.targetCompany))} className="w-full relative z-20 bg-white text-black p-5 rounded-xl font-bold uppercase tracking-widest hover:scale-[1.02] active:scale-95 transition-all disabled:opacity-50 disabled:hover:scale-100">
-              {isFormLocked ? "Return to Galaxy Map" : "Calculate Route"}
+
+            {/* 🔥 UPDATE: Button triggers diagnostic gauntlet */}
+            <button onClick={handleStartDiagnostic} disabled={(!isFormLocked && (!formData.fullName || !formData.targetCompany))} className="w-full relative z-20 bg-white text-black p-5 rounded-xl font-bold uppercase tracking-widest hover:scale-[1.02] active:scale-95 transition-all disabled:opacity-50 disabled:hover:scale-100">
+              {isFormLocked ? "Return to Galaxy Map" : "Commence Gauntlet"}
             </button>
           </div>
         </div>

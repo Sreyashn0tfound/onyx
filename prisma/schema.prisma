@@ -1,14 +1,18 @@
 generator client {
-  provider = "prisma-client-js"
+  provider        = "prisma-client-js"
+  previewFeatures = ["postgresqlExtensions"]
 }
 
+
 datasource db {
-  provider  = "postgresql"
-  url       = env("DATABASE_URL")
-  directUrl = env("DIRECT_URL") // Required for Neon serverless pooling
+  provider   = "postgresql"
+  url        = env("DATABASE_URL")
+  directUrl  = env("DIRECT_URL")
+  extensions = [vector]
 }
 
 // --- ENUMS ---
+
 enum RoadmapStatus {
   GENERATING
   IN_PROGRESS
@@ -24,49 +28,70 @@ enum NodeStatus {
 enum InterviewType {
   GENERAL_HR
   TECHNICAL_BOSS
+  AMAZON_CRUCIBLE // 🔥 NEW: Supports the Moon's Amazon SDE incident round
+}
+
+enum NotificationType {
+  CERTIFICATION_RECOMMENDATION
+  WEAKNESS_ALERT
+  STREAK_REMINDER
+  ROADMAP_UPDATE
 }
 
 // --- MODELS ---
 
 model User {
-  id            String    @id @default(uuid())
-  email         String    @unique
-  password      String?   // NEW: Required for Auth.js Credentials
-  name          String?
-  degree        String?
-  currentYear   String?
-  targetCompany String?
-  targetRole    String?
-  createdAt     DateTime  @default(now())
+  id              String   @id @default(uuid())
+  email           String   @unique
+  password        String?  
+  name            String?
+  degree          String?
+  currentYear     String?
+  targetCompany   String?
+  targetRole      String?
+  
+  // -- Data Ingestion & Pre-Assessment --
+  githubUrl       String?  
+  linkedinUrl     String?  
+  rawResumeText   String?  @db.Text
+  diagnosticScore Int?     
+
+  // 🔥 THE HIVE MIND DOSSIER (Managed by Sam)
+  // Stores parsed GitHub repos, LinkedIn summary, and aggregated weak spots
+  profileTelemetry Json?   @default("{}")
+
+  createdAt       DateTime @default(now())
 
   // --- Auth.js Relations ---
-  accounts      Account[]
-  sessions      Session[]
+  accounts        Account[]
+  sessions        Session[]
 
   // --- Onyx Core Relations ---
-  resumeScans       ResumeScan[]
-  roadmaps          Roadmap[]
-  codeSubmissions   CodeSubmission[]
-  interviewSessions InterviewSession[]
+  resumeScans        ResumeScan[]
+  roadmaps           Roadmap[]
+  codeSubmissions    CodeSubmission[]
+  interviewSessions  InterviewSession[]
+  notifications      Notification[] // 🔥 NEW: Sam's notification feed
 }
 
-// --- NEW: AUTH.JS MODELS ---
+// --- AUTH.JS MODELS ---
 
 model Account {
-  id                 String  @id @default(cuid())
-  userId             String
-  type               String
-  provider           String
-  providerAccountId  String
-  refresh_token      String?  @db.Text
-  access_token       String?  @db.Text
-  expires_at         Int?
-  token_type         String?
-  scope              String?
-  id_token           String?  @db.Text
-  session_state      String?
+  id                String  @id @default(cuid())
+  userId            String
+  type              String
+  provider          String
+  providerAccountId String
+  refresh_token     String? @db.Text
+  access_token      String? @db.Text
+  expires_at        Int?
+  token_type        String?
+  scope             String?
+  id_token          String? @db.Text
+  session_state     String?
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
   @@unique([provider, providerAccountId])
 }
 
@@ -80,21 +105,37 @@ model Session {
 
 // --- ONYX FEATURE MODELS ---
 
-model ResumeScan {
-  id               String   @id @default(uuid())
-  userId           String
-  overallAtsScore  Int
-  roast            String
-  missingKeywords  String[]
-  improvementPlan  String[]
-  createdAt        DateTime @default(now())
+model Notification {
+  id          String           @id @default(uuid())
+  userId      String
+  type        NotificationType
+  title       String
+  message     String           @db.Text
+  actionUrl   String?          // URL to certification course or specific node
+  isRead      Boolean          @default(false)
+  createdAt   DateTime         @default(now())
 
-  user             User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user        User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model ResumeScan {
+  id              String   @id @default(uuid())
+  userId          String
+  overallAtsScore Int
+  roast           String   @db.Text
+  missingKeywords String[]
+  improvementPlan String[]
+
+  embedding       Unsupported("vector(1536)")? 
+
+  createdAt       DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 }
 
 model Roadmap {
   id             String        @id @default(uuid())
-  userId         String
+  userId         String        
   title          String
   expectedSalary String
   description    String
@@ -102,49 +143,62 @@ model Roadmap {
   status         RoadmapStatus @default(IN_PROGRESS)
   createdAt      DateTime      @default(now())
 
-  user           User          @relation(fields: [userId], references: [id], onDelete: Cascade)
-  nodes          RoadmapNode[]
+  user  User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  nodes RoadmapNode[]
 }
 
 model RoadmapNode {
   id                String     @id @default(uuid())
   roadmapId         String
-  sequenceIndex     Int        // To keep them in order (1, 2, 3...)
-  phaseTitle        String     // e.g., "Phase 01"
-  chapterTitle      String     // e.g., "Arrays & Hashing"
-  notes             String     // Architect Briefing
-  assignmentPrompt  String     // The Trial
+  sequenceIndex     Int        
+  phaseTitle        String     
+  chapterTitle      String     
+  notes             String     @db.Text 
+  studyMaterial     String?    @db.Text // Used directly by Diva
+  assignmentPrompt  String     @db.Text 
   youtubeSearchTerm String
   status            NodeStatus @default(LOCKED)
 
-  roadmap           Roadmap          @relation(fields: [roadmapId], references: [id], onDelete: Cascade)
-  submissions       CodeSubmission[]
+  roadmap     Roadmap          @relation(fields: [roadmapId], references: [id], onDelete: Cascade)
+  submissions CodeSubmission[]
 }
 
 model CodeSubmission {
-  id          String   @id @default(uuid())
-  userId      String
-  nodeId      String
-  codeWritten String
-  aiFeedback  String
-  score       Int
-  passed      Boolean
-  createdAt   DateTime @default(now())
+  id            String      @id @default(uuid())
+  userId        String
+  nodeId        String
+  codeWritten   String      @db.Text
+  aiFeedback    String      @db.Text
+  score         Int
+  passed        Boolean
+  attempts      Int         @default(1) 
+  timeSpentSecs Int?        
+  
+  // AST logs, Big-O complexity, error stacks
+  executionLogs Json?       @default("{}")
 
-  user        User         @relation(fields: [userId], references: [id], onDelete: Cascade)
-  node        RoadmapNode  @relation(fields: [nodeId], references: [id], onDelete: Cascade)
+  createdAt     DateTime    @default(now())
+
+  user          User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  node          RoadmapNode @relation(fields: [nodeId], references: [id], onDelete: Cascade)
 }
 
 model InterviewSession {
-  id            String        @id @default(uuid())
-  userId        String
-  interviewType InterviewType
-  transcript    Json          // Stores the exact chat history array
-  finalScore    Int?
-  summary       String?
-  strengths     String[]
-  weaknesses    String[]
-  createdAt     DateTime      @default(now())
+  id                 String        @id @default(uuid())
+  userId             String
+  interviewType      InterviewType
+  transcript         Json          // Full multi-turn message history with agent tags
+  finalScore         Int?
+  
+  // 🔥 BIOMETRIC & FCV TELEMETRY (Shaun, Jacob & Asha)
+  // Stores stress telemetry, gaze anomalies, posture warnings, and AST evaluations
+  biometricTelemetry Json?         @default("{}")
+  textAnalysis       Json?         @default("{}")
+  
+  summary            String?       @db.Text
+  strengths          String[]
+  weaknesses         String[]
+  createdAt          DateTime      @default(now())
 
-  user          User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user               User          @relation(fields: [userId], references: [id], onDelete: Cascade)
 }

@@ -10,6 +10,7 @@ import { useRef, useState, Suspense } from 'react';
 
 // --- NEW AUTH IMPORT ---
 import { signIn } from 'next-auth/react';
+import { checkUserRoadmapAction } from '@/app/actions';
 
 // --- DRIFTING BACKGROUND SATELLITE ---
 const DriftingSatellite = () => {
@@ -61,9 +62,20 @@ export default function LoginPage() {
       setError("Invalid credentials. Please verify your Auth Sync ID and Encryption Key.");
       setIsLoading(false);
     } else {
-      // Auth success! Blast them to the dashboard
+      // Auth success! Check for an existing roadmap before routing
+      const sessionRes = await fetch('/api/auth/session');
+      const sessionData = await sessionRes.json();
+      
+      if (sessionData?.user?.id) {
+        const check = await checkUserRoadmapAction(sessionData.user.id);
+        if (check.hasRoadmap) {
+          sessionStorage.setItem('onyx_appState', 'map');
+        } else {
+          sessionStorage.setItem('onyx_appState', 'intake');
+        }
+      }
+
       router.push('/dashboard');
-      router.refresh(); 
     }
   };
 
@@ -158,7 +170,7 @@ export default function LoginPage() {
 
           <div className="mt-8 pt-6 border-t border-white/10 text-center">
             <p className="text-[#86868b] text-xs font-light">
-              Don't have clearance? <Link href="/signup" className="text-white hover:text-[#0a84ff] font-semibold transition-colors">Request Access</Link>
+              Don&apos;t have clearance? <Link href="/signup" className="text-white hover:text-[#0a84ff] font-semibold transition-colors">Request Access</Link>
             </p>
           </div>
         </div>

@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
-import { SessionProvider } from "next-auth/react"; // <-- NEW: Auth.js Provider
+import { SessionProvider } from "next-auth/react";
+import GlobalNav from "@/app/components/GlobalNav"; // 🔥 NEW: Global Account UI
 import "./globals.css";
 
 const geistSans = Geist({
@@ -26,10 +27,10 @@ export default function RootLayout({
   return (
     <html lang="en">
       <body
-        className={`${geistSans.variable} ${geistMono.variable} antialiased`}
+        className={`${geistSans.variable} ${geistMono.variable} antialiased bg-black text-white`}
       >
-        {/* NEW: Wraps the app in Auth.js context */}
         <SessionProvider>
+          <GlobalNav />
           {children}
         </SessionProvider>
       </body>

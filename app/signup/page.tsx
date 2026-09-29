@@ -116,9 +116,9 @@ export default function SignupPage() {
         // Fallback if auto-login bugs out
         setTimeout(() => router.push('/login'), 1500);
       } else {
-        // Blasted straight to the dashboard
+        // Brand new profile, force intake state, and blast to dashboard
+        sessionStorage.setItem('onyx_appState', 'intake');
         router.push('/dashboard');
-        router.refresh();
       }
     }
   };
