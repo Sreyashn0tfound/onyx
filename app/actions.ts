@@ -453,3 +453,28 @@ export async function ingestCandidateProfileAction(userId: string, githubUrl: st
     return { success: false, error: error.message };
   }
 }
+
+// --- ACTION 16: GENERAL HR INTERVIEW ---
+export async function conductGeneralHRAction(chatHistory: { role: string; text: string }[], targetRole: string) {
+  try {
+    const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
+    
+    const formattedMessages = chatHistory.map(msg => ({
+      role: msg.role === "ai" ? "assistant" : "user",
+      content: msg.text
+    }));
+    
+    const completion = await groq.chat.completions.create({
+      messages: [
+        { role: "system", content: `You are Torii, the HR AI. The candidate is applying for ${targetRole}. Keep responses to 2 sentences max. Evaluate cultural fit.` },
+        ...formattedMessages as any
+      ],
+      model: "llama3-8b-8192",
+      temperature: 0.6
+    });
+
+    return { success: true, reply: completion.choices[0]?.message?.content };
+  } catch (error: any) {
+    return { success: false, error: error.message };
+  }
+}
