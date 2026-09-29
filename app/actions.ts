@@ -478,3 +478,45 @@ export async function conductGeneralHRAction(chatHistory: { role: string; text: 
     return { success: false, error: error.message };
   }
 }
+
+// --- ACTION 17: EVALUATE INTERVIEW (For PostInterviewReport.tsx) ---
+export async function evaluateInterviewAction(
+  transcript: any[],
+  targetCompany: string,
+  finalCode: string,
+  telemetry: any
+) {
+  try {
+    const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
+    
+    const prompt = `You are an expert technical recruiter for ${targetCompany}.
+Evaluate this interview transcript and final code submission. 
+Telemetry: ${JSON.stringify(telemetry)}
+Final Code: ${finalCode}
+
+Return ONLY a JSON object with this exact structure (no markdown blocks, no markdown formatting, just pure valid JSON):
+{
+  "score": <number 0-100>,
+  "feedback": {
+    "strengths": ["...", "..."],
+    "weaknesses": ["...", "..."],
+    "summary": "...",
+    "cognitive_analysis": "..."
+  }
+}`;
+
+    const completion = await groq.chat.completions.create({
+      messages: [{ role: "user", content: prompt }],
+      model: "llama3-8b-8192",
+      temperature: 0.2,
+      response_format: { type: "json_object" }
+    });
+
+    const responseText = completion.choices[0]?.message?.content || "{}";
+    const report = JSON.parse(responseText);
+
+    return { success: true, report };
+  } catch (error: any) {
+    return { success: false, error: error.message };
+  }
+}
