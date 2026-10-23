@@ -20,7 +20,14 @@ from typing import Dict, Any, Optional, List
 import uvicorn
 
 import mediapipe as mp
-from pykokoro import KokoroPipeline, PipelineConfig
+try:
+    from pykokoro import KokoroPipeline, PipelineConfig
+    _KOKORO_AVAILABLE = True
+except Exception as _kokoro_err:
+    KokoroPipeline = None  # type: ignore
+    PipelineConfig = None  # type: ignore
+    _KOKORO_AVAILABLE = False
+    print(f"[Onyx Warning] PyKokoro unavailable (audio TTS disabled): {_kokoro_err}")
 
 # Lazy-load DeepFace to avoid hard TF import crash on startup.
 # The /api/cv/analyze endpoint already has a try/except so it degrades gracefully.
@@ -62,6 +69,8 @@ _KOKORO_LOCKS: Dict[str, threading.Lock] = {}
 _KOKORO_INIT_LOCK = threading.Lock()
 
 def get_tts_pipeline(voice_id: str):
+    if not _KOKORO_AVAILABLE or KokoroPipeline is None or PipelineConfig is None:
+        return None, None
     with _KOKORO_INIT_LOCK:
         if voice_id not in KOKORO_PIPELINES:
             print(f"[Onyx TTS] Initializing voice: {voice_id}")
@@ -74,13 +83,15 @@ def _warmup_models():
     """Runs in a background thread so the server accepts requests immediately.
     Initialising every voice up-front removes the multi-second 'first time this
     persona speaks' stall; a dummy DeepFace call loads its weights once."""
-    for voice in dict.fromkeys(PERSONA_VOICES.values()):
-        try:
-            pipe, lock = get_tts_pipeline(voice)
-            with lock:
-                pipe.run("Ready.")
-        except Exception as e:
-            print(f"[Onyx TTS] Warmup failed for {voice}: {e}")
+    if _KOKORO_AVAILABLE:
+        for voice in dict.fromkeys(PERSONA_VOICES.values()):
+            try:
+                pipe, lock = get_tts_pipeline(voice)
+                if pipe and lock:
+                    with lock:
+                        pipe.run("Ready.")
+            except Exception as e:
+                print(f"[Onyx TTS] Warmup failed for {voice}: {e}")
     if _DEEPFACE_AVAILABLE and DeepFace is not None:
         try:
             DeepFace.analyze(np.zeros((48, 48, 3), dtype=np.uint8), actions=["emotion"],
@@ -147,10 +158,12 @@ def split_sentences(text: str, max_chars: int = 220) -> List[str]:
     return chunks
 
 
-def synthesize_audio_b64(text: str, voice_id: str = "am_michael") -> str:
+def synthesize_audio_b64(text: str, voice_id: str = "am_michael") -> Optional[str]:
     """Helper to convert short text to fast base64 WAV audio."""
-    clean_text = re.sub(r'[*#_`]', '', text)[:600] 
     pipe, lock = get_tts_pipeline(voice_id)
+    if not pipe or not lock:
+        return None
+    clean_text = re.sub(r'[*#_`]', '', text)[:600] 
     with lock:  # one synthesis per voice at a time (pipeline is not thread-safe)
         kokoro_result = pipe.run(clean_text)
     audio_int16 = np.clip(kokoro_result.audio * 32767, -32768, 32767).astype(np.int16)
