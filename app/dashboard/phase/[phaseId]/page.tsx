@@ -12,13 +12,13 @@ import {
   Mic, 
   MicOff,
   Volume2, 
+  VolumeX,
   Loader2, 
   CheckCircle, 
   XCircle, 
   Send 
 } from 'lucide-react';
 import Editor from '@monaco-editor/react';
-import { BRAIN_URL } from '@/lib/brain';
 
 import { Canvas, useFrame } from '@react-three/fiber';
 import { useGLTF, Float, Center, Resize, Stars } from '@react-three/drei';
@@ -27,7 +27,13 @@ import * as THREE from 'three';
 
 import InterviewRoom from '@/app/components/InterviewRoom';
 import AmazonAIAssessment from '@/app/components/AmazonAIAssessment';
-import { getUserRoadmapAction, gradeAssignmentAction, saveCodeSubmissionAction } from '@/app/actions';
+import { 
+  getUserRoadmapAction, 
+  gradeAssignmentAction, 
+  saveCodeSubmissionAction,
+  startLectureAction,
+  chatWithDivaAction
+} from '@/app/actions';
 import { useSpeechToText } from '@/lib/useSpeechToText';
 
 const PHASE_THEMES: { [key: string]: { name: string, model: string, colors: { primary: string, accent: string, glow: string } } } = {
@@ -76,11 +82,91 @@ export default function PhasePage() {
   // Audio, Speech-to-Text & Comlink States
   const [isOnyxThinking, setIsOnyxThinking] = useState(false);
   const [isOnyxSpeaking, setIsOnyxSpeaking] = useState(false);
-  const [transcript, setTranscript] = useState<{ id: string; speaker: string; agent?: string; text: string }[]>([]);
+  const [transcript, setTranscript] = useState<{ id: string; speaker: string; agent?: string; text: string; audio_base64?: string | null }[]>([]);
   const [chatInput, setChatInput] = useState("");
+  const [autoplayBlocked, setAutoplayBlocked] = useState(false);
+  const [pendingAudio, setPendingAudio] = useState<{ text: string; audioBase64?: string | null } | null>(null);
 
   const transcriptEndRef = useRef<HTMLDivElement>(null);
   const audioRef = useRef<HTMLAudioElement>(null);
+
+  const stopAllSpeech = () => {
+    if (audioRef.current) {
+      audioRef.current.pause();
+      audioRef.current.currentTime = 0;
+    }
+    if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
+      window.speechSynthesis.cancel();
+    }
+    setIsOnyxSpeaking(false);
+  };
+
+  const playSpeech = async (text: string, audioBase64?: string | null) => {
+    stopAllSpeech();
+
+    const speakWithBrowser = () => {
+      if (typeof window === 'undefined' || !('speechSynthesis' in window)) {
+        setIsOnyxSpeaking(false);
+        return;
+      }
+      const clean = (text || '').replace(/[*#_`]/g, '').trim();
+      if (!clean) {
+        setIsOnyxSpeaking(false);
+        return;
+      }
+      const utterance = new SpeechSynthesisUtterance(clean);
+      utterance.rate = 1.0;
+      utterance.pitch = 1.05;
+
+      const voices = window.speechSynthesis.getVoices();
+      const femaleVoice = voices.find(v => 
+        /female|samantha|victoria|sonia|zira|karen|moira|tessa/i.test(v.name) && v.lang.startsWith('en')
+      ) || voices.find(v => v.lang.startsWith('en'));
+      if (femaleVoice) utterance.voice = femaleVoice;
+
+      utterance.onstart = () => setIsOnyxSpeaking(true);
+      utterance.onend = () => setIsOnyxSpeaking(false);
+      utterance.onerror = () => setIsOnyxSpeaking(false);
+
+      window.speechSynthesis.speak(utterance);
+    };
+
+    if (audioBase64 && audioRef.current) {
+      audioRef.current.src = `data:audio/wav;base64,${audioBase64}`;
+      setIsOnyxSpeaking(true);
+      try {
+        await audioRef.current.play();
+        setAutoplayBlocked(false);
+      } catch (err: any) {
+        console.warn("[Diva TTS] Audio element playback error:", err);
+        if (err?.name === "NotAllowedError") {
+          setAutoplayBlocked(true);
+          setPendingAudio({ text, audioBase64 });
+          setIsOnyxSpeaking(false);
+        } else {
+          speakWithBrowser();
+        }
+      }
+    } else {
+      speakWithBrowser();
+    }
+  };
+
+  // If autoplay was blocked by browser policy on initial load, unblock on first click/keypress
+  useEffect(() => {
+    if (!autoplayBlocked || !pendingAudio) return;
+    const handleFirstInteraction = () => {
+      setAutoplayBlocked(false);
+      playSpeech(pendingAudio.text, pendingAudio.audioBase64);
+      setPendingAudio(null);
+    };
+    window.addEventListener('click', handleFirstInteraction, { once: true });
+    window.addEventListener('keydown', handleFirstInteraction, { once: true });
+    return () => {
+      window.removeEventListener('click', handleFirstInteraction);
+      window.removeEventListener('keydown', handleFirstInteraction);
+    };
+  }, [autoplayBlocked, pendingAudio]);
 
   // Coding Assessment States
   const [dynamicQuestions, setDynamicQuestions] = useState<string[]>([]);
@@ -160,27 +246,18 @@ export default function PhasePage() {
     const triggerOpeningLecture = async () => {
       setIsOnyxThinking(true);
       try {
-        const res = await fetch(`${BRAIN_URL}/api/lecture/start`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            chapter_title: currentModule.chapterTitle,
-            study_material: currentModule.studyMaterial || currentModule.notes || "Let's master the core architecture."
-          })
-        });
+        const res = await startLectureAction(
+          currentModule.chapterTitle,
+          currentModule.studyMaterial || currentModule.notes || "Let's master the core architecture."
+        );
 
-        if (res.ok) {
-          const data = await res.json();
+        if (res.success && res.data) {
+          const { lecture_text, audio_base64 } = res.data;
           setTranscript(prev => [
             ...prev,
-            { id: Date.now().toString(), speaker: "AI", agent: "Onyx Mentor", text: data.lecture_text }
+            { id: Date.now().toString(), speaker: "AI", agent: "Diva", text: lecture_text, audio_base64 }
           ]);
-
-          if (data.audio_base64 && audioRef.current) {
-            audioRef.current.src = `data:audio/wav;base64,${data.audio_base64}`;
-            setIsOnyxSpeaking(true);
-            audioRef.current.play().catch(() => setIsOnyxSpeaking(false));
-          }
+          await playSpeech(lecture_text, audio_base64);
         }
       } catch (err) {
         console.error("Lecture start error:", err);
@@ -197,10 +274,7 @@ export default function PhasePage() {
   const { isListening, isTranscribing, toggleListening, stopListening } = useSpeechToText();
 
   const toggleMicListening = () => {
-    if (audioRef.current && isOnyxSpeaking) {
-      audioRef.current.pause();
-      setIsOnyxSpeaking(false);
-    }
+    stopAllSpeech();
     toggleListening(chatInput, (updatedText) => {
       setChatInput(updatedText);
     });
@@ -210,6 +284,7 @@ export default function PhasePage() {
   const sendToHiveMind = async (text: string, isSystemTrigger: boolean = false) => {
     if (!text.trim()) return;
     if (isListening) stopListening();
+    stopAllSpeech();
 
     if (!isSystemTrigger) {
       setTranscript(prev => [...prev, { id: Date.now().toString(), speaker: "User", text }]);
@@ -218,36 +293,34 @@ export default function PhasePage() {
     setIsOnyxThinking(true);
 
     try {
-      // We append the current live code to the prompt so Diva knows what the user is working on!
       const codeContext = codeAnswers[currentQuestionIdx] && codeAnswers[currentQuestionIdx] !== DEFAULT_COMMENT
-        ? `\n\n[Live Editor Buffer]:\n${codeAnswers[currentQuestionIdx]}`
+        ? codeAnswers[currentQuestionIdx]
         : "";
 
-      const response = await fetch(`${BRAIN_URL}/api/chat/message`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          text: text + codeContext,
-          module_context: currentModule ? `${currentModule.chapterTitle}: ${currentModule.notes}` : "General Engineering"
-        })
+      const currentHistory = transcript
+        .filter(t => t.speaker === 'User' || t.speaker === 'AI')
+        .map(t => ({ role: t.speaker === 'User' ? 'user' : 'ai', text: t.text }));
+
+      const res = await chatWithDivaAction({
+        text,
+        moduleContext: currentModule ? `${currentModule.chapterTitle}: ${currentModule.notes}` : "General Engineering",
+        chatHistory: currentHistory,
+        liveCode: codeContext
       });
 
-      if (!response.ok) throw new Error("Hive Mind offline");
+      if (!res.success || !res.data) {
+        throw new Error(res.error || "Diva link offline");
+      }
 
-      const data = await response.json();
+      const data = res.data;
 
       setTranscript(prev => [
         ...prev,
-        { id: Date.now().toString(), speaker: "AI", agent: data.agent || "Onyx Core", text: data.ai_text }
+        { id: Date.now().toString(), speaker: "AI", agent: data.agent || "Diva", text: data.ai_text, audio_base64: data.audio_base64 }
       ]);
 
       setIsOnyxThinking(false);
-
-      if (data.audio_base64 && audioRef.current) {
-        audioRef.current.src = `data:audio/wav;base64,${data.audio_base64}`;
-        setIsOnyxSpeaking(true);
-        audioRef.current.play().catch(() => setIsOnyxSpeaking(false));
-      }
+      await playSpeech(data.ai_text, data.audio_base64);
     } catch (err: any) {
       setTranscript(prev => [...prev, { id: Date.now().toString(), speaker: "System", text: `[Transmission Failed]: ${err.message}` }]);
       setIsOnyxThinking(false);
@@ -460,13 +533,46 @@ export default function PhasePage() {
               </div>
             </div>
 
+            {/* Browser Autoplay Notification Banner */}
+            {autoplayBlocked && (
+              <div 
+                onClick={() => {
+                  setAutoplayBlocked(false);
+                  if (pendingAudio) {
+                    playSpeech(pendingAudio.text, pendingAudio.audioBase64);
+                    setPendingAudio(null);
+                  }
+                }}
+                className="mx-6 mt-3 px-3 py-2 bg-blue-500/20 border border-blue-500/40 rounded-xl flex items-center justify-between cursor-pointer hover:bg-blue-500/30 transition-all shadow-lg animate-pulse"
+              >
+                <div className="flex items-center gap-2 text-xs text-blue-200">
+                  <VolumeX size={14} className="text-blue-400" />
+                  <span>Browser paused audio. <strong>Click to hear Diva</strong></span>
+                </div>
+                <div className="flex items-center gap-1 text-[10px] font-mono uppercase bg-blue-500 text-white px-2 py-0.5 rounded">
+                  <Volume2 size={12} /> Unmute
+                </div>
+              </div>
+            )}
+
             {/* Chat Transcript Area */}
             <div className="flex-1 bg-[#050505] p-6 overflow-y-auto custom-scrollbar flex flex-col gap-5 shadow-inner">
               {transcript.map((msg) => (
                 <div key={msg.id} className={`flex flex-col max-w-[90%] ${msg.speaker === 'User' ? 'self-end items-end' : 'self-start items-start'}`}>
-                  <span className="text-[10px] font-mono uppercase tracking-widest text-gray-500 mb-1">
-                    {msg.speaker === 'User' ? 'You' : (msg.agent || 'Onyx Mentor')}
-                  </span>
+                  <div className="flex items-center gap-2 mb-1">
+                    <span className="text-[10px] font-mono uppercase tracking-widest text-gray-500">
+                      {msg.speaker === 'User' ? 'You' : (msg.agent || 'Diva')}
+                    </span>
+                    {msg.speaker !== 'User' && msg.speaker !== 'System' && (
+                      <button 
+                        onClick={() => playSpeech(msg.text, msg.audio_base64)} 
+                        className="text-gray-400 hover:text-white p-0.5 rounded transition-colors"
+                        title="Replay Diva's voice"
+                      >
+                        <Volume2 size={12} className={isOnyxSpeaking ? "text-purple-400" : ""} />
+                      </button>
+                    )}
+                  </div>
                   <div 
                     className={`px-4 py-3 text-sm leading-relaxed font-mono whitespace-pre-wrap ${
                       msg.speaker === 'System' 

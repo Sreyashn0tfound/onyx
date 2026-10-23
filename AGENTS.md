@@ -158,6 +158,11 @@ So almost all problems below are **logic/runtime bugs**, not compile errors.
       now derive `userId` from `auth()`; client arg kept (ignored) for signature compatibility.
 - [ ] **E42 Neon port 5432 unreachable from dev machine** (TCP blocked; HTTPS works) — network/firewall, not code. Prod host must reach it.
 - [x] **E43 Microphone / STT silent failures on Chromium & localhost.** Components previously relied on bare `webkitSpeechRecognition` without requesting `navigator.mediaDevices.getUserMedia`, causing silent permission/network dropouts. Created `lib/useSpeechToText.ts` with explicit media stream access, live speech dictation, and auto-fallback to Groq Whisper (`whisper-large-v3`) via recorded `MediaRecorder` audio blobs.
+- [x] **E44 Diva TTS silence in production & browser autoplay block.**
+  - `phase/[phaseId]/page.tsx` bypassed Next.js server actions and fetched `${BRAIN_URL}` directly from browser without `X-Onyx-Key`, triggering 401 Unauthorized in production when `ONYX_BRAIN_SECRET` is set, or mixed-content / localhost failure.
+  - Browser Autoplay policy blocked `audio.play()` on page load without prior user interaction, caught and ignored silently.
+  - No fallback to browser `speechSynthesis` when PyKokoro is unavailable, warming up, or under heavy CPU load.
+  - Fixed: Created `startLectureAction` and upgraded `chatWithDivaAction` in `actions.ts` with `brainHeaders()` and Gemini fast fallback. Added dual-engine audio playback (PyKokoro HTML5 Audio + Web Speech API fallback) in `page.tsx` and `InterviewRoom.tsx`, autoplay unblock banner + one-time user interaction listener, and voice replay buttons.
 - [x] **E10 Planet progress never loaded.** `dashboard/page.tsx` `highestUnlockedPhase` is local state = 1, never derived from DB node statuses (only a dev "Unlock All" button).
 
 ### 🟠 P1 — Wrong results / data issues
@@ -227,6 +232,12 @@ Criterion { type: TESTS_PASS | COMPLEXITY_LTE | QUIZ_SCORE_GTE | STRESS_NOMINAL 
 3) convert interview panel to goal loop · 4) Diva node goals · 5) Sam supervisor + Mahoraga · 6) security hardening.
 
 ## 13. CHANGELOG (append every change, newest first)
+- 2026-10-23 — Fixed Text-to-Speech (TTS) and Diva audio in production & browser environments (E44).
+  - Eliminated unauthorized direct browser requests from `phase/[phaseId]/page.tsx` by routing all lecture and chat communication through new server actions (`startLectureAction` & enhanced `chatWithDivaAction`) with `brainHeaders()` and Gemini fast fallback.
+  - Implemented dual-engine audio playback: tries neural base64 PyKokoro audio first, and automatically falls back to browser Web Speech API (`window.speechSynthesis`) if audio is absent or unplayable.
+  - Resolved browser Autoplay policy blocking (`NotAllowedError`) on initial page load: added one-time user interaction listener and an animated "Unmute Diva" banner.
+  - Added message-level replay 🔊 buttons on transcript messages so candidates can re-listen to Diva anytime.
+  - Hardened PyKokoro audio synthesis in `onyx-brain/main.py` with safe string length, try/except boundaries, and concise speakable lecture scripts.
 - 2026-10-23 — Committed & pushed all pending work (Gemini migration, STT hook, P0/P1/P2 fixes, AGENTS.md,
   research bundle) to `origin/main` (github.com/Sreyashn0tfound/onyx). Pre-push scan: no API keys in tree; `.env*` ignored.
 - 2026-10-22 — Fixed microphone and Speech-To-Text across the entire app (E43).

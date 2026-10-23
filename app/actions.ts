@@ -393,24 +393,129 @@ export async function submitToOnyxBrainAction(payload: {
   }
 }
 
-// --- ACTION 12: CHAT WITH DIVA (THE INSTRUCTOR) ---
-export async function chatWithDivaAction(text: string, moduleContext: string) {
+// --- ACTION 12a: START DIVA LECTURE ---
+export async function startLectureAction(chapterTitle: string, studyMaterial: string) {
   try {
-    const response = await fetch(`${BRAIN_URL}/api/chat/message`, {
+    const response = await fetch(`${BRAIN_URL}/api/lecture/start`, {
       method: "POST",
       headers: brainHeaders(),
       body: JSON.stringify({
-        text: text,
-        module_context: moduleContext
+        chapter_title: chapterTitle,
+        study_material: studyMaterial,
       }),
+      signal: AbortSignal.timeout(30_000),
     });
 
-    if (!response.ok) throw new Error("Diva Backend Error");
-    
-    const data = await response.json();
-    return { success: true, data };
+    if (response.ok) {
+      const data = await response.json();
+      return { success: true, data };
+    }
   } catch (error: any) {
-    return { success: false, error: error.message };
+    console.warn("[startLectureAction] FastAPI offline/timed out, failing over to Gemini:", error?.message);
+  }
+
+  // Graceful server-side Gemini fallback
+  try {
+    const prompt = `You are Diva, a Lead Technical Instructor on the Onyx FAANG placement platform.
+Chapter Title: ${chapterTitle}
+Study Material / Notes: ${studyMaterial.slice(0, 1000)}
+Deliver a 2-3 sentence spoken micro-briefing introducing this core engineering topic to the candidate with clarity and warmth.
+Do not use any markdown formatting, bullet points, asterisks, or bold text, as your words will be read aloud by speech synthesis.`;
+
+    const geminiRes = await genai.models.generateContent({
+      model: GEMINI_MODELS.FAST,
+      contents: prompt,
+    });
+    const text = geminiRes.text?.trim() || `Welcome to ${chapterTitle}. Let's master the core architecture together.`;
+    return { success: true, data: { lecture_text: text, audio_base64: null, agent: "Diva" } };
+  } catch (_geminiError: any) {
+    return {
+      success: true,
+      data: {
+        lecture_text: `Welcome to ${chapterTitle}. Let's master this topic and optimize your implementation.`,
+        audio_base64: null,
+        agent: "Diva"
+      }
+    };
+  }
+}
+
+// --- ACTION 12b: CHAT WITH DIVA (THE INSTRUCTOR) ---
+export async function chatWithDivaAction(
+  input: string | { text: string; moduleContext?: string; chatHistory?: any[]; liveCode?: string },
+  maybeContext?: string
+) {
+  const text = typeof input === 'string' ? input : input.text;
+  const moduleContext = typeof input === 'string' ? (maybeContext || 'General Engineering') : (input.moduleContext || 'General Engineering');
+  const chatHistory = typeof input === 'object' && input.chatHistory ? input.chatHistory : [];
+  const liveCode = typeof input === 'object' && input.liveCode ? input.liveCode : '';
+
+  try {
+    const session = await auth();
+    const candidateMemory = {
+      user_name: session?.user?.name || "Candidate",
+      user_id: session?.user?.id || "anonymous",
+      target_company: "FAANG",
+      target_role: "Software Engineer"
+    };
+
+    const finalPayload = {
+      text: liveCode ? `${text}\n\n[Live Editor Buffer]:\n${liveCode}` : text,
+      module_context: moduleContext,
+      chat_history: chatHistory,
+      candidate_memory: candidateMemory
+    };
+
+    const response = await fetch(`${BRAIN_URL}/api/chat/message`, {
+      method: "POST",
+      headers: brainHeaders(),
+      body: JSON.stringify(finalPayload),
+      signal: AbortSignal.timeout(30_000),
+    });
+
+    if (response.ok) {
+      const data = await response.json();
+      return { success: true, data };
+    }
+  } catch (error: any) {
+    console.warn("[chatWithDivaAction] FastAPI offline/timed out, failing over to Gemini:", error?.message);
+  }
+
+  // Graceful Gemini fallback if Python brain is down
+  try {
+    const systemInstruction = `[AUTHORIZATION LEVEL: LEAD INSTRUCTOR // NAME: DIVA]
+You are Diva, a Lead Technical Instructor for the Onyx platform.
+Current Module Curriculum: ${moduleContext}
+Tone: Warm, highly articulate, encouraging, but academically rigorous.
+Speak in 2 to 4 natural, conversational sentences.
+Do not use markdown bullet points, bolding, or asterisks, as your text will be read aloud by speech synthesis.`;
+
+    const contents = [
+      ...chatHistory.map((m: any) => ({
+        role: m.role === 'ai' ? 'model' : 'user',
+        parts: [{ text: m.text || '' }]
+      })),
+      { role: 'user', parts: [{ text: liveCode ? `${text}\n\n[Candidate Live Code]:\n${liveCode}` : text }] }
+    ];
+
+    const geminiRes = await genai.models.generateContent({
+      model: GEMINI_MODELS.FAST,
+      contents,
+      config: { systemInstruction }
+    });
+
+    const aiText = geminiRes.text?.trim() || "Let's keep working through this module together.";
+    return {
+      success: true,
+      data: {
+        ai_text: aiText,
+        agent: "Diva",
+        audio_base64: null,
+        events: []
+      }
+    };
+  } catch (geminiError: any) {
+    return { success: false, error: geminiError?.message || "Diva temporarily unreachable." };
   }
 }
 

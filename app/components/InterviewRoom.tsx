@@ -244,7 +244,26 @@ export default function InterviewRoom({ phaseId, phaseData, theme, onExit, isSim
       if (data.audio_base64 && audioRef.current) {
         audioRef.current.src = `data:audio/wav;base64,${data.audio_base64}`;
         setIsSpeaking(true);
-        audioRef.current.play().catch(() => setIsSpeaking(false));
+        audioRef.current.play().catch(() => {
+          // Fall back to browser speech synthesis
+          if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
+            const clean = (data.response || '').replace(/[*#_`]/g, '').trim();
+            const utterance = new SpeechSynthesisUtterance(clean);
+            utterance.onstart = () => setIsSpeaking(true);
+            utterance.onend = () => setIsSpeaking(false);
+            utterance.onerror = () => setIsSpeaking(false);
+            window.speechSynthesis.speak(utterance);
+          } else {
+            setIsSpeaking(false);
+          }
+        });
+      } else if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
+        const clean = (data.response || '').replace(/[*#_`]/g, '').trim();
+        const utterance = new SpeechSynthesisUtterance(clean);
+        utterance.onstart = () => setIsSpeaking(true);
+        utterance.onend = () => setIsSpeaking(false);
+        utterance.onerror = () => setIsSpeaking(false);
+        window.speechSynthesis.speak(utterance);
       }
 
       if (data.is_complete) {

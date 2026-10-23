@@ -160,22 +160,27 @@ def split_sentences(text: str, max_chars: int = 220) -> List[str]:
 
 def synthesize_audio_b64(text: str, voice_id: str = "am_michael") -> Optional[str]:
     """Helper to convert short text to fast base64 WAV audio."""
-    pipe, lock = get_tts_pipeline(voice_id)
-    if not pipe or not lock:
+    try:
+        pipe, lock = get_tts_pipeline(voice_id)
+        if not pipe or not lock:
+            return None
+        clean_text = re.sub(r'[*#_`]', '', text)[:450] 
+        with lock:  # one synthesis per voice at a time (pipeline is not thread-safe)
+            kokoro_result = pipe.run(clean_text)
+        audio_int16 = np.clip(kokoro_result.audio * 32767, -32768, 32767).astype(np.int16)
+
+        wav_io = io.BytesIO()
+        with wave.open(wav_io, 'wb') as wf:
+            wf.setnchannels(1)
+            wf.setsampwidth(2)
+            wf.setframerate(kokoro_result.sample_rate)
+            wf.writeframes(audio_int16.tobytes())
+
+        return base64.b64encode(wav_io.getvalue()).decode('utf-8')
+    except Exception as e:
+        print(f"[Onyx TTS] Synthesis failed for voice {voice_id}: {e}")
         return None
-    clean_text = re.sub(r'[*#_`]', '', text)[:600] 
-    with lock:  # one synthesis per voice at a time (pipeline is not thread-safe)
-        kokoro_result = pipe.run(clean_text)
-    audio_int16 = np.clip(kokoro_result.audio * 32767, -32768, 32767).astype(np.int16)
 
-    wav_io = io.BytesIO()
-    with wave.open(wav_io, 'wb') as wf:
-        wf.setnchannels(1)
-        wf.setsampwidth(2)
-        wf.setframerate(kokoro_result.sample_rate)
-        wf.writeframes(audio_int16.tobytes())
-
-    return base64.b64encode(wav_io.getvalue()).decode('utf-8')
 
 
 # --- MEDIAPIPE INITIALIZATION ---
@@ -430,7 +435,9 @@ async def tts(req: TTSRequest):
 # --- 3. LEARNING MODULE ENDPOINTS (DIVA'S DOMAIN) ---
 @app.post("/api/lecture/start")
 async def start_lecture(req: LectureRequest):
-    opening_script = f"Welcome to {req.chapter_title}. Let's break this down. {req.study_material}"
+    clean_mat = re.sub(r'[*#_`]', '', req.study_material or '').strip()
+    first_sentence = clean_mat.split('.')[0].strip() if clean_mat else "Let's master the core architecture."
+    opening_script = f"Welcome to {req.chapter_title}. {first_sentence}. When you are ready, let me know your thoughts or start writing your solution in the editor."
     if req.defer_audio:
         return {"lecture_text": opening_script, "audio_base64": None, "agent": "Diva"}
     audio_b64 = await asyncio.to_thread(synthesize_audio_b64, opening_script, PERSONA_VOICES["Diva"])
