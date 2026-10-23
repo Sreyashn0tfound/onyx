@@ -16,3 +16,4 @@ langgraph==1.2.10
 groq==0.37.1
 aioice==0.10.2
 python-multipart==0.0.32
+edge-tts>=7.0.0

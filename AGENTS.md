@@ -232,6 +232,10 @@ Criterion { type: TESTS_PASS | COMPLEXITY_LTE | QUIZ_SCORE_GTE | STRESS_NOMINAL 
 3) convert interview panel to goal loop · 4) Diva node goals · 5) Sam supervisor + Mahoraga · 6) security hardening.
 
 ## 13. CHANGELOG (append every change, newest first)
+- 2026-10-23 — Upgraded TTS to Microsoft Edge Neural Voices & unlocked Sun Boss Panel.
+  - Replaced CPU-heavy PyKokoro with Microsoft Edge Neural TTS (`edge-tts`) for studio-grade, expressive voices at zero GPU/CPU cost: Diva (`en-US-JennyNeural`), Shaun (`en-US-GuyNeural`), Jacob (`en-GB-RyanNeural`), Asha (`en-US-MichelleNeural`).
+  - Added seamless MP3 & WAV MIME detection in `page.tsx` and `InterviewRoom.tsx` for instant HTML5 audio playback.
+  - Unlocked The Sun (`Phase 100`, Technical Boss Interview) in both 3D solar system and 2D map views so it is accessible from the start for testing in production.
 - 2026-10-23 — Fixed Text-to-Speech (TTS) and Diva audio in production & browser environments (E44).
   - Eliminated unauthorized direct browser requests from `phase/[phaseId]/page.tsx` by routing all lecture and chat communication through new server actions (`startLectureAction` & enhanced `chatWithDivaAction`) with `brainHeaders()` and Gemini fast fallback.
   - Implemented dual-engine audio playback: tries neural base64 PyKokoro audio first, and automatically falls back to browser Web Speech API (`window.speechSynthesis`) if audio is absent or unplayable.

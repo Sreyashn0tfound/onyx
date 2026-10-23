@@ -132,7 +132,12 @@ export default function PhasePage() {
     };
 
     if (audioBase64 && audioRef.current) {
-      audioRef.current.src = `data:audio/wav;base64,${audioBase64}`;
+      const src = audioBase64.startsWith('data:')
+        ? audioBase64
+        : audioBase64.startsWith('UklGR')
+        ? `data:audio/wav;base64,${audioBase64}`
+        : `data:audio/mpeg;base64,${audioBase64}`;
+      audioRef.current.src = src;
       setIsOnyxSpeaking(true);
       try {
         await audioRef.current.play();

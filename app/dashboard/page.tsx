@@ -77,7 +77,7 @@ const RoadmapPlanet = ({ data, highestUnlockedPhase }: { data: any, highestUnloc
   const router = useRouter();
 
   let isLocked = false;
-  if (data.id === 100) isLocked = highestUnlockedPhase <= 5; 
+  if (data.id === 100) isLocked = false; // Tech Boss Panel is unlocked from the beginning for testing
   else isLocked = data.id > highestUnlockedPhase; 
 
   useFrame((state, delta) => {
@@ -105,11 +105,11 @@ const RoadmapPlanet = ({ data, highestUnlockedPhase }: { data: any, highestUnloc
         <Html position={[0, (data.scale * 0.8), 0]} center zIndexRange={[100, 0]}>
           <div className="flex flex-col items-center justify-center bg-[#0a0a0a]/90 backdrop-blur-md px-6 py-3 rounded-2xl pointer-events-none shadow-2xl" style={{ border: `1px solid ${uiColor}50`, boxShadow: `0 10px 30px -10px ${uiColor}80` }}>
             <span className="text-[10px] font-mono font-bold uppercase tracking-[0.2em] mb-1" style={{ color: uiColor }}>
-              {isLocked ? `LOCKED` : (data.isSpecial ? "RESTRICTED ACCESS" : `Phase 0${data.id}`)}
+              {data.id === 100 ? "TECH BOSS PANEL (UNLOCKED)" : (isLocked ? `LOCKED` : `Phase 0${data.id}`)}
             </span>
             <span className="text-white text-lg font-bold tracking-tighter whitespace-nowrap uppercase">{data.name}</span>
             <span className={`text-xs mt-1 uppercase tracking-widest ${isLocked ? 'text-red-400' : 'text-gray-400'}`}>
-              {isLocked ? (data.id === 100 ? "Clear Phase 5 to unlock" : "Clear previous node to unlock") : "Click to Enter Orbit"}
+              {isLocked ? "Clear previous node to unlock" : (data.id === 100 ? "Click to Enter Boss Chamber" : "Click to Enter Orbit")}
             </span>
           </div>
         </Html>
@@ -389,14 +389,14 @@ export default function Dashboard() {
             
             {ORBITAL_NODES.map((node) => {
               let isLocked = false;
-              if (node.id === 100) isLocked = highestUnlockedPhase <= 5;
+              if (node.id === 100) isLocked = false; // Always open & accessible for testing
               else isLocked = node.id > highestUnlockedPhase;
 
               return (
                 <div key={node.id} onClick={() => { if (!isLocked) router.push(node.route); }} className={`p-6 w-64 rounded-2xl border bg-black/50 backdrop-blur-md transition-all ${isLocked ? 'border-red-500/30 opacity-50 cursor-not-allowed' : 'border-white/20 hover:border-white/50 hover:scale-[1.02] cursor-pointer'}`} style={!isLocked ? { borderTop: `2px solid ${node.color}` } : {}}>
-                  <div className="text-xs font-mono mb-2" style={{ color: isLocked ? '#ef4444' : node.color }}>{node.isSpecial ? "RESTRICTED" : `PHASE 0${node.id}`}</div>
+                  <div className="text-xs font-mono mb-2" style={{ color: isLocked ? '#ef4444' : node.color }}>{node.id === 100 ? "UNRESTRICTED" : (node.isSpecial ? "RESTRICTED" : `PHASE 0${node.id}`)}</div>
                   <div className="text-xl font-bold uppercase tracking-tight text-white mb-2">{node.name}</div>
-                  <div className="text-xs uppercase tracking-widest text-gray-400">{isLocked ? 'Locked' : 'Enter Orbit'}</div>
+                  <div className="text-xs uppercase tracking-widest text-gray-400">{isLocked ? 'Locked' : (node.id === 100 ? 'Face Boss Panel' : 'Enter Orbit')}</div>
                 </div>
               );
             })}

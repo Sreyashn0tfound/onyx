@@ -21,13 +21,21 @@ import uvicorn
 
 import mediapipe as mp
 try:
+    import edge_tts
+    _EDGE_TTS_AVAILABLE = True
+except Exception as _edge_err:
+    edge_tts = None  # type: ignore
+    _EDGE_TTS_AVAILABLE = False
+    print(f"[Onyx Warning] edge-tts unavailable: {_edge_err}")
+
+try:
     from pykokoro import KokoroPipeline, PipelineConfig
     _KOKORO_AVAILABLE = True
 except Exception as _kokoro_err:
     KokoroPipeline = None  # type: ignore
     PipelineConfig = None  # type: ignore
     _KOKORO_AVAILABLE = False
-    print(f"[Onyx Warning] PyKokoro unavailable (audio TTS disabled): {_kokoro_err}")
+    print(f"[Onyx Warning] PyKokoro unavailable: {_kokoro_err}")
 
 # Lazy-load DeepFace to avoid hard TF import crash on startup.
 # The /api/cv/analyze endpoint already has a try/except so it degrades gracefully.
@@ -53,15 +61,15 @@ from personas.amazon_q import amazon_q_node
 from ast_engine import analyze_code_complexity, feedback_for
 from complexity import is_quadratic_or_worse
 
-# --- VOICE MAPPINGS ---
+# --- MICROSOFT EDGE NEURAL VOICES (LIVELY, EXPRESSIVE, STUDIO QUALITY, 100% FREE) ---
 PERSONA_VOICES = {
-    "Tech Lead": "am_adam",        # Shaun
-    "Architect": "bm_george",      # Jacob (key must match panel_satisfaction key)
-    "HR": "af_sarah",              # Asha
-    "Diva": "af_bella",            # Diva (Tutor)
-    "Onyx Core": "am_michael",     # Fallback
-    "System": "am_michael",
-    "Amazon Q Assistant": "am_michael"
+    "Diva": "en-US-JennyNeural",          # Warm, charismatic, articulate technical lead instructor
+    "Tech Lead": "en-US-GuyNeural",       # Sharp, authoritative tech lead (Shaun)
+    "Architect": "en-GB-RyanNeural",      # Analytical, sophisticated British architect (Jacob)
+    "HR": "en-US-MichelleNeural",         # Empathetic, composed HR director (Asha)
+    "Amazon Q Assistant": "en-US-ChristopherNeural",
+    "Onyx Core": "en-US-JennyNeural",
+    "System": "en-US-ChristopherNeural"
 }
 
 KOKORO_PIPELINES: Dict[str, Any] = {}
@@ -73,32 +81,21 @@ def get_tts_pipeline(voice_id: str):
         return None, None
     with _KOKORO_INIT_LOCK:
         if voice_id not in KOKORO_PIPELINES:
-            print(f"[Onyx TTS] Initializing voice: {voice_id}")
+            print(f"[Onyx TTS] Initializing Kokoro voice: {voice_id}")
             KOKORO_PIPELINES[voice_id] = KokoroPipeline(PipelineConfig(voice=voice_id))
             _KOKORO_LOCKS[voice_id] = threading.Lock()
         return KOKORO_PIPELINES[voice_id], _KOKORO_LOCKS[voice_id]
 
 
 def _warmup_models():
-    """Runs in a background thread so the server accepts requests immediately.
-    Initialising every voice up-front removes the multi-second 'first time this
-    persona speaks' stall; a dummy DeepFace call loads its weights once."""
-    if _KOKORO_AVAILABLE:
-        for voice in dict.fromkeys(PERSONA_VOICES.values()):
-            try:
-                pipe, lock = get_tts_pipeline(voice)
-                if pipe and lock:
-                    with lock:
-                        pipe.run("Ready.")
-            except Exception as e:
-                print(f"[Onyx TTS] Warmup failed for {voice}: {e}")
+    """Warm up vision models in a background thread."""
     if _DEEPFACE_AVAILABLE and DeepFace is not None:
         try:
             DeepFace.analyze(np.zeros((48, 48, 3), dtype=np.uint8), actions=["emotion"],
                              enforce_detection=False, silent=True)
         except Exception:
             pass
-    print("[Onyx Engine] Warmup complete: all voices + vision models loaded.")
+    print("[Onyx Engine] Startup models ready. Edge TTS active for human neural voices.")
 
 
 @asynccontextmanager
@@ -158,28 +155,57 @@ def split_sentences(text: str, max_chars: int = 220) -> List[str]:
     return chunks
 
 
-def synthesize_audio_b64(text: str, voice_id: str = "am_michael") -> Optional[str]:
-    """Helper to convert short text to fast base64 WAV audio."""
-    try:
-        pipe, lock = get_tts_pipeline(voice_id)
-        if not pipe or not lock:
-            return None
-        clean_text = re.sub(r'[*#_`]', '', text)[:450] 
-        with lock:  # one synthesis per voice at a time (pipeline is not thread-safe)
-            kokoro_result = pipe.run(clean_text)
-        audio_int16 = np.clip(kokoro_result.audio * 32767, -32768, 32767).astype(np.int16)
-
-        wav_io = io.BytesIO()
-        with wave.open(wav_io, 'wb') as wf:
-            wf.setnchannels(1)
-            wf.setsampwidth(2)
-            wf.setframerate(kokoro_result.sample_rate)
-            wf.writeframes(audio_int16.tobytes())
-
-        return base64.b64encode(wav_io.getvalue()).decode('utf-8')
-    except Exception as e:
-        print(f"[Onyx TTS] Synthesis failed for voice {voice_id}: {e}")
+async def synthesize_edge_tts_b64(text: str, voice_id: str) -> Optional[str]:
+    """Stream audio from Microsoft Edge Neural TTS into base64 MP3."""
+    if not _EDGE_TTS_AVAILABLE or edge_tts is None:
         return None
+    try:
+        clean_text = re.sub(r'[*#_`]', '', text or '').strip()
+        if not clean_text:
+            return None
+        comm = edge_tts.Communicate(clean_text[:1200], voice_id)
+        chunks = []
+        async for chunk in comm.stream():
+            if chunk["type"] == "audio":
+                chunks.append(chunk["data"])
+        if not chunks:
+            return None
+        return base64.b64encode(b"".join(chunks)).decode("utf-8")
+    except Exception as e:
+        print(f"[Onyx TTS] Edge TTS failed for voice {voice_id}: {e}")
+        return None
+
+
+async def synthesize_audio_b64(text: str, voice_id: str = "en-US-JennyNeural") -> Optional[str]:
+    """Master TTS synthesizer: Edge Neural TTS (Primary, studio-quality) -> PyKokoro (Local Fallback)."""
+    # 1. Primary: Microsoft Edge Neural TTS
+    if _EDGE_TTS_AVAILABLE:
+        audio = await synthesize_edge_tts_b64(text, voice_id)
+        if audio:
+            return audio
+
+    # 2. Secondary fallback: Local PyKokoro
+    if _KOKORO_AVAILABLE:
+        try:
+            kokoro_voice = "af_bella" if "Jenny" in voice_id or "Michelle" in voice_id else "am_michael"
+            pipe, lock = get_tts_pipeline(kokoro_voice)
+            if pipe and lock:
+                clean_text = re.sub(r'[*#_`]', '', text or '')[:350]
+                with lock:
+                    kokoro_result = pipe.run(clean_text)
+                audio_int16 = np.clip(kokoro_result.audio * 32767, -32768, 32767).astype(np.int16)
+                wav_io = io.BytesIO()
+                with wave.open(wav_io, 'wb') as wf:
+                    wf.setnchannels(1)
+                    wf.setsampwidth(2)
+                    wf.setframerate(kokoro_result.sample_rate)
+                    wf.writeframes(audio_int16.tobytes())
+                return base64.b64encode(wav_io.getvalue()).decode('utf-8')
+        except Exception as e:
+            print(f"[Onyx TTS] Kokoro fallback failed: {e}")
+
+    return None
+
 
 
 
@@ -418,14 +444,14 @@ async def analyze_ast(req: ASTRequest):
 async def tts(req: TTSRequest):
     """Synthesize ONE short chunk (the client splits replies into sentences and
     plays chunk 1 while chunk 2 is being synthesized)."""
-    voice = req.voice or PERSONA_VOICES.get(req.agent or "", "am_michael")
+    voice = req.voice or PERSONA_VOICES.get(req.agent or "", "en-US-JennyNeural")
     if voice not in set(PERSONA_VOICES.values()):
-        voice = "am_michael"
-    text = (req.text or "").strip()[:600]
+        voice = "en-US-JennyNeural"
+    text = (req.text or "").strip()[:1000]
     if not text:
         return {"audio_base64": None, "voice": voice}
     try:
-        audio = await asyncio.to_thread(synthesize_audio_b64, text, voice)
+        audio = await synthesize_audio_b64(text, voice)
         return {"audio_base64": audio, "voice": voice}
     except Exception as e:
         print(f"[Onyx TTS] /api/tts failed: {e}")
@@ -440,7 +466,7 @@ async def start_lecture(req: LectureRequest):
     opening_script = f"Welcome to {req.chapter_title}. {first_sentence}. When you are ready, let me know your thoughts or start writing your solution in the editor."
     if req.defer_audio:
         return {"lecture_text": opening_script, "audio_base64": None, "agent": "Diva"}
-    audio_b64 = await asyncio.to_thread(synthesize_audio_b64, opening_script, PERSONA_VOICES["Diva"])
+    audio_b64 = await synthesize_audio_b64(opening_script, PERSONA_VOICES["Diva"])
     return {"lecture_text": opening_script, "audio_base64": audio_b64, "agent": "Diva"}
 
 _DIVA_TOOL_FALLBACKS = {
@@ -479,7 +505,7 @@ async def chat_message(req: ChatRequest):
         if not ai_text:
             ai_text = "Could you say that another way?"
 
-        audio_b64 = None if req.defer_audio else await asyncio.to_thread(synthesize_audio_b64, ai_text, PERSONA_VOICES["Diva"])
+        audio_b64 = None if req.defer_audio else await synthesize_audio_b64(ai_text, PERSONA_VOICES["Diva"])
         return {"ai_text": ai_text, "agent": "Diva", "audio_base64": audio_b64, "events": events}
     except Exception as e:
         import traceback
@@ -567,7 +593,8 @@ async def _safe_tts(text: str, agent: str) -> Optional[str]:
     if not text:
         return None
     try:
-        return await asyncio.to_thread(synthesize_audio_b64, text, PERSONA_VOICES.get(agent, "bm_george"))
+        voice = PERSONA_VOICES.get(agent, "en-US-JennyNeural")
+        return await synthesize_audio_b64(text, voice)
     except Exception as tts_err:
         print(f"[Onyx TTS] Synthesis failed for {agent}: {tts_err}")
         return None

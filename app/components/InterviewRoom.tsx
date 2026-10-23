@@ -242,7 +242,12 @@ export default function InterviewRoom({ phaseId, phaseData, theme, onExit, isSim
       setIsProcessing(false);
 
       if (data.audio_base64 && audioRef.current) {
-        audioRef.current.src = `data:audio/wav;base64,${data.audio_base64}`;
+        const src = data.audio_base64.startsWith('data:')
+          ? data.audio_base64
+          : data.audio_base64.startsWith('UklGR')
+          ? `data:audio/wav;base64,${data.audio_base64}`
+          : `data:audio/mpeg;base64,${data.audio_base64}`;
+        audioRef.current.src = src;
         setIsSpeaking(true);
         audioRef.current.play().catch(() => {
           // Fall back to browser speech synthesis
