@@ -1,0 +1,80 @@
+{
+  "sample_problems": {
+    "two_sum": {
+      "prompt": "Given an array of integers nums and an integer target, return indices of the two numbers such that they add up to target.",
+      "test_cases": [
+        {
+          "call": "two_sum([2, 7, 11, 15], 9)",
+          "expected": "[0, 1]"
+        },
+        {
+          "call": "two_sum([3, 2, 4], 6)",
+          "expected": "[1, 2]"
+        }
+      ],
+      "submissions": {
+        "unoptimized_quadratic": {
+          "code": "def two_sum(nums, target):\n    for i in range(len(nums)):\n        for j in range(i + 1, len(nums)):\n            if nums[i] + nums[j] == target:\n                return [i, j]\n    return []",
+          "ast_analysis": {
+            "valid_syntax": true,
+            "error_message": null,
+            "time_complexity": "O(n^2)",
+            "loop_depth": 2,
+            "uses_sort": false,
+            "recursive_functions": []
+          },
+          "neuro_symbolic_verification": {
+            "verified": false,
+            "conflicts": [
+              "VIOLATION: Tech Lead approved O(n^2) code. Goal requires O(n log n) or better.",
+              "VIOLATION: Tech Lead claimed 'O(n)' but static analysis confirms 'O(n^2)'."
+            ],
+            "notes": [],
+            "claim_complexity": "O(n)",
+            "actual_complexity": "O(n^2)"
+          },
+          "scorecard": {
+            "final_score": 55.0,
+            "passed_threshold": false,
+            "breakdown": {
+              "test_cases": 50.0,
+              "time_complexity": 0,
+              "composure": 5
+            },
+            "actual_complexity": "O(n^2)",
+            "expected_complexity": "O(n)"
+          }
+        },
+        "optimized_linear": {
+          "code": "def two_sum(nums, target):\n    seen = {}\n    for i, num in enumerate(nums):\n        diff = target - num\n        if diff in seen:\n            return [seen[diff], i]\n        seen[num] = i\n    return []",
+          "ast_analysis": {
+            "valid_syntax": true,
+            "error_message": null,
+            "time_complexity": "O(n)",
+            "loop_depth": 1,
+            "uses_sort": false,
+            "recursive_functions": []
+          },
+          "neuro_symbolic_verification": {
+            "verified": true,
+            "conflicts": [],
+            "notes": [],
+            "claim_complexity": "O(n)",
+            "actual_complexity": "O(n)"
+          },
+          "scorecard": {
+            "final_score": 100.0,
+            "passed_threshold": true,
+            "breakdown": {
+              "test_cases": 50.0,
+              "time_complexity": 30,
+              "composure": 20
+            },
+            "actual_complexity": "O(n)",
+            "expected_complexity": "O(n)"
+          }
+        }
+      }
+    }
+  }
+}

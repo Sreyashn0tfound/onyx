@@ -18,6 +18,7 @@ import {
   Send 
 } from 'lucide-react';
 import Editor from '@monaco-editor/react';
+import { BRAIN_URL } from '@/lib/brain';
 
 import { Canvas, useFrame } from '@react-three/fiber';
 import { useGLTF, Float, Center, Resize, Stars } from '@react-three/drei';
@@ -27,6 +28,7 @@ import * as THREE from 'three';
 import InterviewRoom from '@/app/components/InterviewRoom';
 import AmazonAIAssessment from '@/app/components/AmazonAIAssessment';
 import { getUserRoadmapAction, gradeAssignmentAction, saveCodeSubmissionAction } from '@/app/actions';
+import { useSpeechToText } from '@/lib/useSpeechToText';
 
 const PHASE_THEMES: { [key: string]: { name: string, model: string, colors: { primary: string, accent: string, glow: string } } } = {
   '1': { name: 'Fractured Earth', model: 'planet1.glb', colors: { primary: '#3b82f6', accent: '#ea580c', glow: 'rgba(234, 88, 12, 0.4)' } },
@@ -72,14 +74,12 @@ export default function PhasePage() {
   const [selectedModuleId, setSelectedModuleId] = useState<string | null>(null);
 
   // Audio, Speech-to-Text & Comlink States
-  const [isListening, setIsListening] = useState(false);
   const [isOnyxThinking, setIsOnyxThinking] = useState(false);
   const [isOnyxSpeaking, setIsOnyxSpeaking] = useState(false);
   const [transcript, setTranscript] = useState<{ id: string; speaker: string; agent?: string; text: string }[]>([]);
   const [chatInput, setChatInput] = useState("");
 
   const transcriptEndRef = useRef<HTMLDivElement>(null);
-  const recognitionRef = useRef<any>(null);
   const audioRef = useRef<HTMLAudioElement>(null);
 
   // Coding Assessment States
@@ -113,7 +113,7 @@ export default function PhasePage() {
         return;
       }
 
-      const res = await getUserRoadmapAction("user_12345");
+      const res = await getUserRoadmapAction();
       if (res.success && res.roadmap) {
         const pIdNum = parseInt(phaseId);
         const startIdx = (pIdNum - 1) * 3 + 1;
@@ -160,7 +160,7 @@ export default function PhasePage() {
     const triggerOpeningLecture = async () => {
       setIsOnyxThinking(true);
       try {
-        const res = await fetch("http://127.0.0.1:8000/api/lecture/start", {
+        const res = await fetch(`${BRAIN_URL}/api/lecture/start`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
@@ -193,65 +193,23 @@ export default function PhasePage() {
     setQuestionStartTime(Date.now());
   }, [selectedModuleId, currentModule, isSpecialPhase]);
 
-  // SETUP SPEECH RECOGNITION (TRANSCRIBE TO INPUT BOX)
-  useEffect(() => {
-    const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
-    if (!SpeechRecognition) return;
-
-    const recognition = new SpeechRecognition();
-    recognition.continuous = true; 
-    recognition.interimResults = true; 
-    recognition.lang = 'en-US';
-
-    recognition.onresult = (event: any) => {
-      let transcriptBuilder = '';
-      for (let i = 0; i < event.results.length; ++i) {
-        transcriptBuilder += event.results[i][0].transcript;
-      }
-      setChatInput(transcriptBuilder);
-    };
-
-    recognition.onerror = (e: any) => {
-      console.error("Microphone error:", e.error);
-      setIsListening(false);
-    };
-    
-    recognition.onend = () => setIsListening(false);
-
-    recognitionRef.current = recognition;
-
-    return () => {
-      if (recognitionRef.current) recognitionRef.current.stop();
-    };
-  }, []);
+  // ROBUST SPEECH RECOGNITION (WebSpeech + Groq Whisper fallback)
+  const { isListening, isTranscribing, toggleListening, stopListening } = useSpeechToText();
 
   const toggleMicListening = () => {
-    if (!recognitionRef.current) {
-      alert("Microphone recognition is not supported in this browser. Please use Chrome/Edge.");
-      return;
+    if (audioRef.current && isOnyxSpeaking) {
+      audioRef.current.pause();
+      setIsOnyxSpeaking(false);
     }
-
-    if (isListening) {
-      recognitionRef.current.stop();
-      setIsListening(false);
-    } else {
-      if (audioRef.current && isOnyxSpeaking) {
-        audioRef.current.pause();
-        setIsOnyxSpeaking(false);
-      }
-      try {
-        setChatInput(""); 
-        recognitionRef.current.start();
-        setIsListening(true);
-      } catch (e) {
-        console.error("Could not start mic:", e);
-      }
-    }
+    toggleListening(chatInput, (updatedText) => {
+      setChatInput(updatedText);
+    });
   };
 
   // The master communication bridge to Diva
   const sendToHiveMind = async (text: string, isSystemTrigger: boolean = false) => {
     if (!text.trim()) return;
+    if (isListening) stopListening();
 
     if (!isSystemTrigger) {
       setTranscript(prev => [...prev, { id: Date.now().toString(), speaker: "User", text }]);
@@ -265,7 +223,7 @@ export default function PhasePage() {
         ? `\n\n[Live Editor Buffer]:\n${codeAnswers[currentQuestionIdx]}`
         : "";
 
-      const response = await fetch("http://127.0.0.1:8000/api/chat/message", {
+      const response = await fetch(`${BRAIN_URL}/api/chat/message`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -323,7 +281,7 @@ export default function PhasePage() {
           if (currentQuestionIdx === dynamicQuestions.length - 1) {
             await saveCodeSubmissionAction(
               currentModule.sequenceIndex, currentCode, res.result.feedback,
-              res.result.score, true, "user_12345",
+              res.result.score, true,
               { attempts: currentAttempts + 1, timeSpentSeconds }
             );
             setTimeout(() => {
@@ -531,27 +489,30 @@ export default function PhasePage() {
               <div className="flex gap-2">
                 <button 
                   onClick={toggleMicListening}
-                  disabled={isOnyxThinking}
+                  disabled={isOnyxThinking || isTranscribing}
                   className={`flex items-center justify-center px-4 py-3 rounded-xl border transition-all ${
                     isListening 
                       ? 'bg-red-500 border-red-400 text-white animate-pulse shadow-[0_0_20px_rgba(239,68,68,0.4)]' 
+                      : isTranscribing
+                      ? 'bg-blue-600/30 border-blue-500 text-blue-300'
                       : 'bg-white/5 border-white/10 text-gray-300 hover:text-white hover:bg-white/10'
                   }`}
+                  title={isListening ? "Click to stop recording" : "Click to speak"}
                 >
-                  {isListening ? <MicOff size={16} /> : <Mic size={16} />}
+                  {isTranscribing ? <Loader2 size={16} className="animate-spin" /> : isListening ? <MicOff size={16} /> : <Mic size={16} />}
                 </button>
                 <input 
                   type="text" 
                   value={chatInput}
                   onChange={(e) => setChatInput(e.target.value)}
                   onKeyDown={(e) => e.key === 'Enter' && sendToHiveMind(chatInput)}
-                  disabled={isOnyxThinking}
-                  placeholder={isListening ? "Listening to your voice..." : "Ask Diva a question..."}
+                  disabled={isOnyxThinking || isTranscribing}
+                  placeholder={isTranscribing ? "Transcribing speech..." : isListening ? "Listening... click mic again when finished" : "Ask Diva a question..."}
                   className="flex-1 bg-white/5 border border-white/10 rounded-xl px-4 py-3 text-xs text-white focus:outline-none focus:border-white/30 font-mono placeholder:text-gray-600 disabled:opacity-50"
                 />
                 <button 
                   onClick={() => sendToHiveMind(chatInput)}
-                  disabled={!chatInput.trim() || isOnyxThinking}
+                  disabled={!chatInput.trim() || isOnyxThinking || isTranscribing}
                   className="p-3 rounded-xl bg-white text-black hover:bg-gray-200 transition-colors disabled:opacity-30 flex items-center justify-center shrink-0"
                 >
                   <Send size={16} />

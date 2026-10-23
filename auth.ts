@@ -6,6 +6,9 @@ import bcrypt from "bcryptjs"
 
 export const { handlers: { GET, POST }, auth, signIn, signOut } = NextAuth({
   adapter: PrismaAdapter(prisma),
+  // Required in production (next start / non-Vercel hosts / proxies): without it Auth.js v5
+  // throws UntrustedHost and every /api/auth/* route returns 500 → login breaks.
+  trustHost: true,
   session: { strategy: "jwt" }, // JWT is mandatory when using Credentials
   providers: [
     CredentialsProvider({

@@ -1,60 +1,67 @@
 from typing import Dict, Any
 
+from complexity import normalize, compare, is_quadratic_or_worse, UNKNOWN
+
+
 class DeterministicScorer:
     """
     Phase 2 & 4: Deterministic Scoring Engine.
-    Calculates a strict, mathematical score based on hard execution metrics, 
+    Calculates a strict, mathematical score based on hard execution metrics,
     bypassing LLM hallucinations or 'vibes'.
     """
-    
+
     @classmethod
-    def calculate_final_score(cls, 
-                              tests_passed: int, 
-                              total_tests: int, 
-                              time_complexity: str, 
-                              expected_complexity: str, 
+    def calculate_final_score(cls,
+                              tests_passed: int,
+                              total_tests: int,
+                              time_complexity: str,
+                              expected_complexity: str,
                               stress_level: str) -> Dict[str, Any]:
-        
-        score = 0
+
+        score = 0.0
         breakdown = {}
-        
+
         # 1. Test Case Weight (50% of total score)
-        if total_tests > 0:
-            test_ratio = tests_passed / total_tests
-            test_score = test_ratio * 50
-            score += test_score
-            breakdown['test_cases'] = test_score
+        tests_passed = max(0, min(tests_passed or 0, total_tests or 0))
+        if total_tests and total_tests > 0:
+            test_score = (tests_passed / total_tests) * 50
         else:
-            breakdown['test_cases'] = 0
-            
+            test_score = 0
+        score += test_score
+        breakdown['test_cases'] = round(test_score, 2)
+
         # 2. Time Complexity Weight (30% of total score)
-        complexity_score = 0
-        if time_complexity == expected_complexity:
-            complexity_score = 30
-        elif time_complexity == "O(N)" and expected_complexity == "O(1)":
-            complexity_score = 15
-        elif time_complexity in ["O(N^2)", "O(N^3)", "O(N²)"]:
-            complexity_score = 0  # Heavy penalty for unoptimized nested loops
+        actual = normalize(time_complexity)
+        expected = normalize(expected_complexity)
+        cmp = compare(actual, expected)
+        if actual == UNKNOWN:
+            complexity_score = 0           # no verifiable code -> no credit
+        elif cmp is not None and cmp <= 0:
+            complexity_score = 30          # meets or beats the target
+        elif is_quadratic_or_worse(actual):
+            complexity_score = 0           # heavy penalty for unoptimized nested loops
+        elif cmp == 1:
+            complexity_score = 15          # one step off (e.g. O(n log n) vs O(n))
         else:
             complexity_score = 10
-            
         score += complexity_score
         breakdown['time_complexity'] = complexity_score
-        
+
         # 3. Biometric / Behavioral Composure (20% of total score)
-        composure_score = 20
-        if stress_level.lower() == "critical":
+        level = (stress_level or "").strip().lower()
+        if "critical" in level:
             composure_score = 5
-        elif stress_level.lower() == "elevated":
+        elif "elevated" in level:
             composure_score = 12
-        elif stress_level.lower() == "nominal":
-            composure_score = 20
-            
+        else:
+            composure_score = 20           # nominal / unknown / offline -> no penalty
         score += composure_score
         breakdown['composure'] = composure_score
-        
+
         return {
             "final_score": round(score, 2),
             "passed_threshold": score >= 75.0,  # Strict 75% bar to pass
-            "breakdown": breakdown
+            "breakdown": breakdown,
+            "actual_complexity": actual,
+            "expected_complexity": expected,
         }

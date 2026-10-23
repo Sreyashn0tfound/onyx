@@ -1,0 +1,31 @@
+{
+  "prime_routing": {
+    "title": "Prime Locker Dynamic Allocation Service",
+    "description": "The routing engine crashes when incoming packages exceed locker volume. Must run in O(N log N) or better.",
+    "starter_code": "def allocate_lockers(packages, locker_capacities):\n    pass\n",
+    "tests": [
+      {
+        "function_call": "allocate_lockers([{'id': 'p1', 'weight': 5}], [10])",
+        "expected": "{'p1': 0}",
+        "name": "Basic Allocation"
+      },
+      {
+        "function_call": "allocate_lockers([{'id': 'p1', 'weight': 8}, {'id': 'p2', 'weight': 2}], [5, 10])",
+        "expected": "{'p1': 1, 'p2': 0}",
+        "name": "Greedy Fit"
+      }
+    ]
+  },
+  "aws_lambda_scheduler": {
+    "title": "AWS Lambda Cold Start Scheduler",
+    "description": "Given a list of incoming request timestamps, optimize the warm-up sequence to minimize cold starts. Must be O(N).",
+    "starter_code": "def optimize_cold_starts(requests, warmup_time):\n    pass\n",
+    "tests": [
+      {
+        "function_call": "optimize_cold_starts([100, 200, 210, 220], 15)",
+        "expected": "2",
+        "name": "Overlapping Requests"
+      }
+    ]
+  }
+}

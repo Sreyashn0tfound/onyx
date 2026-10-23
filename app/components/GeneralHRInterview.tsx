@@ -1,7 +1,8 @@
 'use client';
 
-import { useState, useEffect, useRef } from 'react';
+import { useState, useRef } from 'react';
 import { conductGeneralHRAction } from '../actions';
+import { useSpeechToText } from '@/lib/useSpeechToText';
 
 interface VoiceInterviewProps {
   targetRole: string;
@@ -16,34 +17,8 @@ export default function VoiceInterview({ targetRole, onInterviewComplete }: Voic
   const [interviewState, setInterviewState] = useState<InterviewState>('idle');
   const [transcript, setTranscript] = useState("");
   const [chatHistory, setChatHistory] = useState<{role: 'ai' | 'user', text: string}[]>([]);
-  
-  const recognitionRef = useRef<any>(null);
 
-  useEffect(() => {
-    // Initialize Browser Speech Recognition (Chrome/Edge)
-    const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
-    if (SpeechRecognition) {
-      recognitionRef.current = new SpeechRecognition();
-      recognitionRef.current.continuous = false;
-      recognitionRef.current.interimResults = true;
-
-      recognitionRef.current.onresult = (event: any) => {
-        const currentTranscript = Array.from(event.results)
-          .map((result: any) => result[0].transcript)
-          .join('');
-        setTranscript(currentTranscript);
-      };
-
-      recognitionRef.current.onend = () => {
-        // When user stops talking, trigger AI
-        if (interviewState === 'listening') {
-          handleUserFinishedSpeaking();
-        }
-      };
-    } else {
-      alert("Your browser doesn't support Voice AI. Please use Chrome or Edge.");
-    }
-  }, [interviewState]);
+  const { isListening, toggleListening, stopListening } = useSpeechToText();
 
   const startInterview = () => {
     const greeting = `Hello. I am Torii, your AI interviewer. I see you are applying for the ${targetRole} position. Are you ready to begin?`;
@@ -54,7 +29,9 @@ export default function VoiceInterview({ targetRole, onInterviewComplete }: Voic
   const startListening = () => {
     setTranscript("");
     setInterviewState('listening');
-    recognitionRef.current?.start();
+    toggleListening("", (updatedText) => {
+      setTranscript(updatedText);
+    });
   };
 
   const handleUserFinishedSpeaking = async () => {
@@ -100,7 +77,7 @@ export default function VoiceInterview({ targetRole, onInterviewComplete }: Voic
 
   const endInterview = () => {
     window.speechSynthesis.cancel();
-    recognitionRef.current?.stop();
+    stopListening();
     setInterviewState('idle');
     console.log("FINAL TRANSCRIPT:", chatHistory);
     

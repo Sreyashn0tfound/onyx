@@ -8,7 +8,7 @@ import * as THREE from 'three';
 import { useRouter } from 'next/navigation';
 import { useSession } from 'next-auth/react'; 
 
-import { generateRoadmapAction, resetTelemetryAction } from '@/app/actions'; 
+import { generateRoadmapAction, resetTelemetryAction, getUserRoadmapAction } from '@/app/actions'; 
 import PreAssessmentTerminal from '@/app/components/PreAssessmentTerminal'; // 🔥 NEW: Import the Terminal
 
 // 🔥 THE NEW COORDINATES: Sun pushed way back, Moon set up to orbit.
@@ -227,6 +227,25 @@ export default function Dashboard() {
     }
   }, []);
 
+  useEffect(() => {
+    if (appState === 'map') {
+      const loadProgress = async () => {
+        const res = await getUserRoadmapAction();
+        if (res.success && res.roadmap?.nodes) {
+          // Find highest unlocked or cleared node phase
+          const unlockedNodes = res.roadmap.nodes.filter((n: any) => n.status === 'UNLOCKED' || n.status === 'CLEARED');
+          if (unlockedNodes.length > 0) {
+            // Node index -> phase logic: Each phase has 3 chapters. (node.sequenceIndex - 1) / 3 + 1
+            const maxSeq = Math.max(...unlockedNodes.map((n: any) => n.sequenceIndex));
+            const currentPhase = Math.floor((maxSeq - 1) / 3) + 1;
+            setHighestUnlockedPhase(currentPhase);
+          }
+        }
+      };
+      loadProgress();
+    }
+  }, [appState]);
+
   const handleInputChange = (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) => { setFormData({ ...formData, [e.target.name]: e.target.value }); };
 
   // 🔥 NEW: Trigger Assessment instead of directly generating map
@@ -297,11 +316,13 @@ export default function Dashboard() {
         {isSimpleMode ? "2D Mode Active" : "3D Engine Active"}
       </button>
 
-      {/* DEV TESTING BYPASS BUTTONS */}
-      <div className="absolute top-4 right-6 z-50 flex gap-4">
-        <button onClick={() => setHighestUnlockedPhase(6)} className="text-[10px] font-mono text-white/20 hover:text-green-500 uppercase tracking-widest transition-colors">[Dev: Unlock All Planets]</button>
-        <button onClick={handleResetTelemetry} className="text-[10px] font-mono text-white/20 hover:text-red-500 uppercase tracking-widest transition-colors">[Dev: Reset Telemetry]</button>
-      </div>
+      {/* DEV TESTING BYPASS BUTTONS (DEV ONLY) */}
+      {process.env.NODE_ENV !== 'production' && (
+        <div className="absolute top-4 right-6 z-50 flex gap-4">
+          <button onClick={() => setHighestUnlockedPhase(6)} className="text-[10px] font-mono text-white/20 hover:text-green-500 uppercase tracking-widest transition-colors">[Dev: Unlock All Planets]</button>
+          <button onClick={handleResetTelemetry} className="text-[10px] font-mono text-white/20 hover:text-red-500 uppercase tracking-widest transition-colors">[Dev: Reset Telemetry]</button>
+        </div>
+      )}
 
       {/* GLASSMORPHIC MAP LEGEND */}
       {appState === 'map' && !isSimpleMode && (

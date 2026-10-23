@@ -1,15 +1,13 @@
-import os
-import re
 import httpx
 import asyncio
 from typing import Dict, Any
 from langchain_core.messages import SystemMessage, HumanMessage
-from langchain_groq import ChatGroq
+from llm import get_llm, parse_json_response
 
 class ProfileParserService:
     def __init__(self):
-        # We use a fast, deterministic model for data extraction
-        self.llm = ChatGroq(model="llama-3.3-70b-versatile", temperature=0.1)
+        # Fast, deterministic extraction: Gemini Flash in strict JSON mode.
+        self.llm = get_llm("fast", temperature=0.1, json_mode=True)
 
     async def parse_github(self, github_url: str) -> Dict[str, Any]:
         """Extracts the username and fetches actual repo telemetry from GitHub API."""
@@ -94,13 +92,9 @@ class ProfileParserService:
                 self.llm.invoke,
                 [SystemMessage(content=system_prompt), HumanMessage(content=raw_text)]
             )
-            
-            # Use Groq's output to return the JSON string
-            parsed_json = response.content
-            import json
             return {
                 "status": "success",
-                "data": json.loads(parsed_json)
+                "data": parse_json_response(response.content)
             }
         except Exception as e:
             print(f"[Resume Parser Error]: {e}")

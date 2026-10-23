@@ -15,6 +15,7 @@ import {
   ShieldCheck
 } from 'lucide-react';
 import Editor from '@monaco-editor/react';
+import { BRAIN_URL } from '@/lib/brain';
 
 export default function AmazonAIAssessment({ onExit }: { onExit: () => void }) {
   const [incident, setIncident] = useState<any>(null);
@@ -34,7 +35,7 @@ export default function AmazonAIAssessment({ onExit }: { onExit: () => void }) {
   useEffect(() => {
     async function loadIncident() {
       try {
-        const res = await fetch('http://127.0.0.1:8000/api/amazon/incident');
+        const res = await fetch(`${BRAIN_URL}/api/amazon/incident`);
         const data = await res.json();
         setIncident(data);
         setCode(data.starter_code);
@@ -65,7 +66,7 @@ export default function AmazonAIAssessment({ onExit }: { onExit: () => void }) {
     setIsAiThinking(true);
 
     try {
-      const res = await fetch('http://127.0.0.1:8000/api/amazon/assistant', {
+      const res = await fetch(`${BRAIN_URL}/api/amazon/assistant`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -91,7 +92,7 @@ export default function AmazonAIAssessment({ onExit }: { onExit: () => void }) {
     setTerminalLogs('Compiling AST and executing unit test matrix...\n');
 
     try {
-      const res = await fetch('http://127.0.0.1:8000/api/amazon/run-tests', {
+      const res = await fetch(`${BRAIN_URL}/api/amazon/run-tests`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -109,7 +110,7 @@ export default function AmazonAIAssessment({ onExit }: { onExit: () => void }) {
         const logLines = data.results.map((r: any) => 
           r.passed 
             ? `[PASS] ${r.name} -> OK` 
-            : `[FAIL] ${r.name} -> Expected: ${r.expected}, Received: ${r.actual || r.error}`
+            : `[FAIL] ${r.name} -> Expected: ${r.expected_output ?? r.expected}, Received: ${r.actual_output || r.actual || r.stderr || r.error}`
         ).join('\n');
         
         setTerminalLogs(`Test Suite Execution Complete:\n\n${logLines}\n\nStatus: ${data.all_passed ? 'ALL SUITES GREEN (100%)' : 'EDGE CASE REGRESSIONS DETECTED'}`);

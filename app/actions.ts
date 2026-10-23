@@ -1,27 +1,34 @@
 'use server';
 
-import { GoogleGenAI } from '@google/genai';
 import Groq from 'groq-sdk';
 import prisma from '../lib/db'; 
-import * as acorn from 'acorn';
-import * as walk from 'acorn-walk';
 import bcrypt from 'bcryptjs';
+import { auth } from '@/auth';
+import { BRAIN_URL, brainHeaders } from '@/lib/brain';
+import { genai, GEMINI_MODELS } from '@/lib/gemini';
 
-const ai = new GoogleGenAI({});
-const groq = new Groq({ apiKey: process.env.GROQ_API_KEY }); 
+// Groq is reserved exclusively for fast speech-to-text (Whisper).
+// All LLM reasoning & generation is powered by Google Gemini (Flash & Argon).
+const groq = new Groq({ apiKey: process.env.GROQ_API_KEY || '' }); 
 
 // --- ACTION 1: GENERATE INITIAL ROADMAP (THE BASELINE) ---
 // 🔥 OVERHAULED: Now delegates reasoning to SAM in the Python backend
-export async function generateRoadmapAction(formData: any, hasResume: boolean, userId: string, userEmail: string) {
+export async function generateRoadmapAction(formData: any, hasResume: boolean, clientUserId: string, clientUserEmail: string) {
   try {
+    // Identity comes from the session, never from the client payload.
+    const session = await auth();
+    const userId = session?.user?.id;
+    if (!userId) return { success: false, error: "Unauthorized" };
+    const userEmail = session.user?.email || clientUserEmail;
+
     const diagnosticScore = typeof formData.diagnosticScore === 'number' ? formData.diagnosticScore : 50;
 
     console.log("Server Action: Waking up Sam (Python) to generate curriculum...");
 
     // 1. Call Python (Sam) to do the heavy AI lifting
-    const response = await fetch("http://127.0.0.1:8000/api/sam/onboard", {
+    const response = await fetch(`${BRAIN_URL}/api/sam/onboard`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: brainHeaders(),
       body: JSON.stringify({
         user_id: userId,
         user_email: userEmail,
@@ -96,25 +103,20 @@ export async function generateRoadmapAction(formData: any, hasResume: boolean, u
 // --- ACTION 2: THE AUTO-GRADER (ARENA / FALLBACK EDITION) ---
 export async function gradeAssignmentAction(code: string, questionPrompt: string, targetCompany: string) {
   try {
-    let maxLoopDepth = 0;
-    let astSuccess = false;
-    let calculatedTimeComplexity = "N/A";
-
+    let astContext = "CONTEXT: Evaluate as conceptual or system design answer.";
     try {
-      const ast = acorn.parse(code, { ecmaVersion: 2024, sourceType: "module" });
-      astSuccess = true;
-      walk.ancestor(ast, {
-        ForStatement(node: any, state: any, ancestors: any[]) { maxLoopDepth = Math.max(maxLoopDepth, ancestors.filter((n: any) => n.type.includes('Statement')).length); },
-        WhileStatement(node: any, state: any, ancestors: any[]) { maxLoopDepth = Math.max(maxLoopDepth, ancestors.filter((n: any) => n.type.includes('Statement')).length); },
+      const astResponse = await fetch(`${BRAIN_URL}/api/ast/analyze`, {
+        method: "POST",
+        headers: brainHeaders(),
+        body: JSON.stringify({ code: code, language: "python" })
       });
-      calculatedTimeComplexity = maxLoopDepth === 0 ? "O(1)" : maxLoopDepth === 1 ? "O(n)" : `O(n^${maxLoopDepth})`;
+      if (astResponse.ok) {
+        const astData = await astResponse.json();
+        astContext = `AST DATA:\n- COMPLEXITY: ${astData.complexity}\n- FEEDBACK: ${astData.feedback}`;
+      }
     } catch (err: any) {
-      console.log("AST Parser skipped: Input is plain text or non-JS.");
+      console.log("Failed to reach Python AST Engine. Proceeding without structural guarantees.");
     }
-
-    const astContext = astSuccess 
-      ? `AST DATA:\n- LOOP DEPTH: ${maxLoopDepth}\n- COMPLEXITY: ${calculatedTimeComplexity}`
-      : `CONTEXT: Evaluate as conceptual or system design answer.`;
 
     const systemPrompt = `You are the lead evaluator for ${targetCompany}.
     Grading prompt: "${questionPrompt}"
@@ -128,16 +130,15 @@ export async function gradeAssignmentAction(code: string, questionPrompt: string
       "metrics": { "timeComplexity": "<string>", "spaceComplexity": "<string>" }
     }`;
 
-    const chatCompletion = await groq.chat.completions.create({
-      messages: [
-        { role: "system", content: systemPrompt },
-        { role: "user", content: `Evaluate this:\n\n${code}` }
+    const completion = await genai.models.generateContent({
+      model: GEMINI_MODELS.FAST,
+      contents: [
+        { role: 'user', parts: [{ text: `${systemPrompt}\n\nEvaluate this candidate code:\n\n${code}` }] }
       ],
-      model: "llama3-70b-8192",
-      response_format: { type: "json_object" }, 
+      config: { responseMimeType: 'application/json' },
     });
 
-    return { success: true, result: JSON.parse(chatCompletion.choices[0]?.message?.content || "{}") };
+    return { success: true, result: JSON.parse(completion.text?.trim() || "{}") };
   } catch (error: any) {
     return { success: false, error: error.message };
   }
@@ -159,16 +160,15 @@ export async function analyzeResumeAction(extractedText: string, targetRole: str
       "missing_ats_keywords": ["string", "string"]
     }`;
 
-    const chatCompletion = await groq.chat.completions.create({
-      messages: [
-        { role: "system", content: systemPrompt },
-        { role: "user", content: extractedText }
+    const completion = await genai.models.generateContent({
+      model: GEMINI_MODELS.FAST,
+      contents: [
+        { role: 'user', parts: [{ text: `${systemPrompt}\n\nCandidate resume text:\n${extractedText}` }] }
       ],
-      model: "llama3-70b-8192", 
-      response_format: { type: "json_object" }, 
+      config: { responseMimeType: 'application/json' },
     });
 
-    return { success: true, result: JSON.parse(chatCompletion.choices[0]?.message?.content || "{}") };
+    return { success: true, result: JSON.parse(completion.text?.trim() || "{}") };
   } catch (error: any) {
     return { success: false, error: error.message };
   }
@@ -189,16 +189,15 @@ export async function buildResumeChatAction(chatHistory: { role: string; text: s
       "overall_ats_score": <number 90-100>
     }`;
 
-    const chatCompletion = await groq.chat.completions.create({
-      messages: [
-        { role: "system", content: systemPrompt },
-        { role: "user", content: `Chat Log:\n${historyText}` }
+    const completion = await genai.models.generateContent({
+      model: GEMINI_MODELS.FAST,
+      contents: [
+        { role: 'user', parts: [{ text: `${systemPrompt}\n\nChat Log:\n${historyText}` }] }
       ],
-      model: "llama3-70b-8192",
-      response_format: { type: "json_object" },
+      config: { responseMimeType: 'application/json' },
     });
 
-    return { success: true, result: JSON.parse(chatCompletion.choices[0]?.message?.content || "{}") };
+    return { success: true, result: JSON.parse(completion.text?.trim() || "{}") };
   } catch (error: any) {
     return { success: false, error: error.message };
   }
@@ -223,8 +222,12 @@ export async function getYouTubeVideoAction(query: string) {
 }
 
 // --- ACTION 6: FETCH ACTIVE ROADMAP FROM DATABASE ---
-export async function getUserRoadmapAction(userId: string) {
+export async function getUserRoadmapAction() {
   try {
+    const session = await auth();
+    const userId = session?.user?.id;
+    if (!userId) return { success: false, message: "Unauthorized" };
+
     const roadmap = await prisma.roadmap.findFirst({
       where: { userId: userId }, 
       include: { nodes: { orderBy: { sequenceIndex: 'asc' } } },
@@ -243,10 +246,12 @@ export async function saveCodeSubmissionAction(
   aiFeedback: string, 
   score: number, 
   passed: boolean, 
-  userId: string,
   telemetry?: { attempts: number; timeSpentSeconds: number } // 🔥 Restored the 7th argument!
 ) {
   try {
+    const session = await auth();
+    const userId = session?.user?.id;
+    if (!userId) return { success: false, message: "Unauthorized" };
     const roadmap = await prisma.roadmap.findFirst({ where: { userId: userId }, orderBy: { createdAt: 'desc' }, include: { nodes: true } });
     if (!roadmap) throw new Error("No roadmap found");
 
@@ -303,13 +308,13 @@ export async function generateArenaQuestionAction(difficulty: string) {
     const systemPrompt = `You are the Onyx Arena Master. Generate a ${difficulty} algorithmic question.
     Output STRICT JSON: { "title": "string", "prompt": "markdown string with test cases" }`;
 
-    const chatCompletion = await groq.chat.completions.create({
-      messages: [{ role: "system", content: systemPrompt }],
-      model: "llama3-70b-8192",
-      response_format: { type: "json_object" }, 
+    const completion = await genai.models.generateContent({
+      model: GEMINI_MODELS.FAST,
+      contents: [{ role: 'user', parts: [{ text: systemPrompt }] }],
+      config: { responseMimeType: 'application/json' },
     });
 
-    return { success: true, question: JSON.parse(chatCompletion.choices[0]?.message?.content || "{}") };
+    return { success: true, question: JSON.parse(completion.text?.trim() || "{}") };
   } catch (error: any) {
     return { success: false, error: error.message };
   }
@@ -338,20 +343,23 @@ export async function signUpAction(formData: FormData) {
 
 // --- ACTION 11: THE ONYX BRAIN BRIDGE (THE PANEL SWARM) ---
 export async function submitToOnyxBrainAction(payload: {
-  userId?: string;
   target_role: string;
   target_company: string;
   is_hr: boolean;
   live_code: string;
+  language?: string;
   whisper_transcript: string;
   chat_history: { role: string; text: string }[];
   cv_telemetry: Record<string, any>;
-  panel_satisfaction: Record<string, boolean>; // 🔥 NOW FORWARDING SATISFACTION ARRAY
+  panel_satisfaction: Record<string, boolean>; // goal state is echoed back by the brain every turn
 }) {
   try {
+    // Identity comes from the session, never from the client payload.
     let candidate_memory = undefined;
-    if (payload.userId) {
-      const user = await prisma.user.findUnique({ where: { id: payload.userId } });
+    const session = await auth();
+    const userId = session?.user?.id;
+    if (userId) {
+      const user = await prisma.user.findUnique({ where: { id: userId } });
       if (user) {
         candidate_memory = {
           user_name: user.name || "Candidate",
@@ -363,30 +371,34 @@ export async function submitToOnyxBrainAction(payload: {
       }
     }
 
-    const finalPayload = { ...payload, candidate_memory };
-    console.log("Transmitting payload to Onyx Brain Swarm (FastAPI)...");
-    
-    const response = await fetch("http://127.0.0.1:8000/api/swarm", {
+    const finalPayload = { ...payload, language: payload.language || "python", candidate_memory };
+    const brainUrl = BRAIN_URL;
+
+    const response = await fetch(`${brainUrl}/api/swarm`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: brainHeaders(),
       body: JSON.stringify(finalPayload),
+      signal: AbortSignal.timeout(120_000),
     });
 
-    if (!response.ok) throw new Error(`FastAPI Backend Error: ${response.statusText}`);
+    if (!response.ok) {
+      const detail = await response.text().catch(() => response.statusText);
+      throw new Error(`FastAPI Backend Error (${response.status}): ${detail.slice(0, 300)}`);
+    }
 
     const data = await response.json();
     return { success: true, swarmData: data };
   } catch (error: any) {
-    return { success: false, error: error.message };
+    return { success: false, error: error?.name === "TimeoutError" ? "Panel timed out. Try again." : error.message };
   }
 }
 
 // --- ACTION 12: CHAT WITH DIVA (THE INSTRUCTOR) ---
 export async function chatWithDivaAction(text: string, moduleContext: string) {
   try {
-    const response = await fetch("http://127.0.0.1:8000/api/chat/message", {
+    const response = await fetch(`${BRAIN_URL}/api/chat/message`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: brainHeaders(),
       body: JSON.stringify({
         text: text,
         module_context: moduleContext
@@ -403,8 +415,11 @@ export async function chatWithDivaAction(text: string, moduleContext: string) {
 }
 
 // --- ACTION 13: CHECK ACTIVE ROADMAP STATUS ---
-export async function checkUserRoadmapAction(userId: string) {
+export async function checkUserRoadmapAction(_clientUserId?: string) {
   try {
+    const session = await auth();
+    const userId = session?.user?.id;
+    if (!userId) return { success: false, hasRoadmap: false };
     const roadmap = await prisma.roadmap.findFirst({ where: { userId: userId } });
     return { success: true, hasRoadmap: !!roadmap };
   } catch (error: any) {
@@ -413,8 +428,11 @@ export async function checkUserRoadmapAction(userId: string) {
 }
 
 // --- ACTION 14: PURGE TELEMETRY (THE NUKE) ---
-export async function resetTelemetryAction(userId: string) {
+export async function resetTelemetryAction(_clientUserId?: string) {
   try {
+    const session = await auth();
+    const userId = session?.user?.id;
+    if (!userId) return { success: false, error: "Unauthorized" };
     await prisma.roadmap.deleteMany({ where: { userId: userId } });
     await prisma.user.update({ where: { id: userId }, data: { diagnosticScore: null } });
     return { success: true };
@@ -424,12 +442,15 @@ export async function resetTelemetryAction(userId: string) {
 }
 
 // --- ACTION 15: INGEST CANDIDATE PROFILE (FEEDS SAM'S DOSSIER) ---
-export async function ingestCandidateProfileAction(userId: string, githubUrl: string, linkedinUrl: string, rawResume: string) {
+export async function ingestCandidateProfileAction(_clientUserId: string, githubUrl: string, linkedinUrl: string, rawResume: string) {
   try {
+    const session = await auth();
+    const userId = session?.user?.id;
+    if (!userId) return { success: false, error: "Unauthorized" };
     console.log("Server Action: Hitting Python Parser Service...");
-    const response = await fetch("http://127.0.0.1:8000/api/profile/ingest", {
+    const response = await fetch(`${BRAIN_URL}/api/profile/ingest`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: brainHeaders(),
       body: JSON.stringify({
         github_url: githubUrl,
         linkedin_url: linkedinUrl,
@@ -457,23 +478,24 @@ export async function ingestCandidateProfileAction(userId: string, githubUrl: st
 // --- ACTION 16: GENERAL HR INTERVIEW ---
 export async function conductGeneralHRAction(chatHistory: { role: string; text: string }[], targetRole: string) {
   try {
-    const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
-    
-    const formattedMessages = chatHistory.map(msg => ({
-      role: msg.role === "ai" ? "assistant" : "user",
-      content: msg.text
-    }));
-    
-    const completion = await groq.chat.completions.create({
-      messages: [
-        { role: "system", content: `You are Torii, the HR AI. The candidate is applying for ${targetRole}. Keep responses to 2 sentences max. Evaluate cultural fit.` },
-        ...formattedMessages as any
-      ],
-      model: "llama3-8b-8192",
-      temperature: 0.6
+    const formattedTranscript = chatHistory
+      .map(msg => `${msg.role === "ai" ? "Torii (HR)" : "Candidate"}: ${msg.text}`)
+      .join("\n");
+
+    const prompt = `You are Torii, the HR Director at Onyx. The candidate is applying for ${targetRole}.
+Keep responses to 2 sentences max. Evaluate cultural fit, leadership principles, and composure. Speak naturally (no markdown or asterisks).
+
+Chat History:
+${formattedTranscript}
+
+Your response:`;
+
+    const completion = await genai.models.generateContent({
+      model: GEMINI_MODELS.FAST,
+      contents: [{ role: 'user', parts: [{ text: prompt }] }],
     });
 
-    return { success: true, reply: completion.choices[0]?.message?.content };
+    return { success: true, reply: completion.text?.trim() };
   } catch (error: any) {
     return { success: false, error: error.message };
   }
@@ -487,14 +509,16 @@ export async function evaluateInterviewAction(
   telemetry: any
 ) {
   try {
-    const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
-    
-    const prompt = `You are an expert technical recruiter for ${targetCompany}.
-Evaluate this interview transcript and final code submission. 
+    const prompt = `You are an expert technical recruiter and architect for ${targetCompany}.
+Perform a deep, rigorous evaluation of this candidate's interview transcript and final code submission. 
 Telemetry: ${JSON.stringify(telemetry)}
-Final Code: ${finalCode}
+Final Code:
+${finalCode}
 
-Return ONLY a JSON object with this exact structure (no markdown blocks, no markdown formatting, just pure valid JSON):
+Interview Transcript:
+${JSON.stringify(transcript, null, 2)}
+
+Return strictly a JSON object with this exact structure:
 {
   "score": <number 0-100>,
   "feedback": {
@@ -505,14 +529,14 @@ Return ONLY a JSON object with this exact structure (no markdown blocks, no mark
   }
 }`;
 
-    const completion = await groq.chat.completions.create({
-      messages: [{ role: "user", content: prompt }],
-      model: "llama3-8b-8192",
-      temperature: 0.2,
-      response_format: { type: "json_object" }
+    // Deep evaluation -> DEEP tier (Argon)
+    const completion = await genai.models.generateContent({
+      model: GEMINI_MODELS.DEEP,
+      contents: [{ role: 'user', parts: [{ text: prompt }] }],
+      config: { responseMimeType: 'application/json' },
     });
 
-    const responseText = completion.choices[0]?.message?.content || "{}";
+    const responseText = completion.text?.trim() || "{}";
     const report = JSON.parse(responseText);
 
     return { success: true, report };

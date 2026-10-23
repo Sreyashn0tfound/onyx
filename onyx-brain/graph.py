@@ -3,21 +3,19 @@ from typing import Annotated, Sequence, TypedDict, Dict, Any, Optional
 
 from langchain_core.messages import BaseMessage
 from langgraph.graph import StateGraph, END
-from langchain_openai import ChatOpenAI
-from config import OPENROUTER_API_KEY, OPENROUTER_BASE_URL
+from llm import get_llm
+from complexity import is_quadratic_or_worse
+
+# Canonical panel member keys. Persona nodes MUST return exactly these as current_agent.
+PANEL_MEMBERS = ("Tech Lead", "Architect", "HR")
 
 # Import the isolated persona brains
 from personas.shaun_tech_lead import shaun_tech_lead_node
 from personas.jacob_architect import jacob_architect_node
 from personas.asha_hr import asha_hr_node
 
-# THE FIX: Temperature dialed down to 0.7 for calculating FAANG engineers.
-llm = ChatOpenAI(
-    model="anthropic/claude-3.5-sonnet",
-    temperature=0.7,
-    openai_api_key=OPENROUTER_API_KEY,
-    openai_api_base=OPENROUTER_BASE_URL
-)
+# Live voiced panel -> FAST tier (Gemini Flash, low thinking) for snappy turns.
+llm = get_llm("fast", temperature=0.7)
 
 
 # 1. THE HIVE MIND STATE
@@ -42,16 +40,17 @@ class AgentState(TypedDict):
 def swarm_router(state: AgentState) -> str:
     """Analyzes telemetry and satisfaction flags to decide exactly who gets the mic."""
     
-    # Default state if not yet initialized in the payload
-    satisfaction = state.get("panel_satisfaction", {"Tech Lead": False, "Architect": False, "HR": False})
+    # Default state if not yet initialized in the payload; missing keys count as unsatisfied.
+    raw = state.get("panel_satisfaction") or {}
+    satisfaction = {k: bool(raw.get(k, False)) for k in PANEL_MEMBERS}
     
     # 🔥 THE KILL SCREEN: If all interviewers are satisfied, terminate the boss fight.
     if all(satisfaction.values()):
         return END
 
-    stress_level = state.get("cv_telemetry", {}).get("stress_level", "Nominal")
-    live_code = state.get("live_code", "").strip()
-    complexity = state.get("ast_analysis", {}).get("time_complexity", "O(1)")
+    stress_level = str(state.get("cv_telemetry", {}).get("stress_level", "Nominal") or "Nominal")
+    live_code = (state.get("live_code") or "").strip()
+    complexity = state.get("ast_analysis", {}).get("time_complexity", "Unknown")
     is_hr_flag = state.get("current_agent") == "HR"
 
     # CASE 1: HR Intercept
@@ -61,7 +60,7 @@ def swarm_router(state: AgentState) -> str:
     
     # CASE 2: The Code Executioner
     # If Shaun is not satisfied yet, and unoptimized code is detected.
-    if not satisfaction.get("Tech Lead", False) and live_code and complexity in ["O(n^2)", "O(n^3)", "O(2^n)"]:
+    if not satisfaction.get("Tech Lead", False) and live_code and is_quadratic_or_worse(complexity):
         return "Tech Lead"
     
     # CASE 3: The Scaler

@@ -18,6 +18,9 @@ import {
 } from 'lucide-react';
 import { Canvas, useFrame } from '@react-three/fiber';
 import * as THREE from 'three';
+import { submitToOnyxBrainAction } from '@/app/actions';
+import { BRAIN_URL } from '@/lib/brain';
+import { useSpeechToText } from '@/lib/useSpeechToText';
 
 // @ts-ignore
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader';
@@ -94,20 +97,23 @@ export default function InterviewRoom({ phaseId, phaseData, theme, onExit, isSim
   const [biometricStress, setBiometricStress] = useState<string>("Initializing...");
   const [astAnalysis, setAstAnalysis] = useState<{ complexity: string; feedback: string } | null>(null);
   const [isAnalyzingAST, setIsAnalyzingAST] = useState(false);
+  const [panelSatisfaction, setPanelSatisfaction] = useState<Record<string, boolean>>({
+    "Tech Lead": false,
+    "Architect": false,
+    "HR": false
+  });
 
   // Editor & Speech States
   const [code, setCode] = useState<string>(
     `# Python 3 - Live FAANG Architecture Buffer\n\nclass SystemService:\n    def __init__(self):\n        self.storage = {}\n\n    def process_request(self, payload: dict) -> bool:\n        # Write optimized implementation here\n        return True\n`
   );
   const [camActive, setCamActive] = useState(true);
-  const [isListening, setIsListening] = useState(false);
   const [chatInput, setChatInput] = useState("");
 
   // Refs
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const audioRef = useRef<HTMLAudioElement>(null);
-  const recognitionRef = useRef<any>(null);
   const transcriptEndRef = useRef<HTMLDivElement>(null);
   
   // 🔥 FIX: The Snapshot Ref to prevent text wiping!
@@ -140,7 +146,7 @@ export default function InterviewRoom({ phaseId, phaseData, theme, onExit, isSim
 
               const base64Frame = canvasRef.current.toDataURL('image/jpeg', 0.6);
 
-              fetch('http://127.0.0.1:8000/api/cv/analyze', {
+              fetch(`${BRAIN_URL}/api/cv/analyze`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ image_base64: base64Frame })
@@ -174,7 +180,22 @@ export default function InterviewRoom({ phaseId, phaseData, theme, onExit, isSim
   }, [camActive, interviewStatus]);
 
   // -------------------------------------------------------------
-  // 2. SUBMIT PAYLOAD TO LANGGRAPH SWARM
+  // 2. ROCK-SOLID SPEECH RECOGNITION (WebSpeech + Groq Whisper fallback)
+  // -------------------------------------------------------------
+  const { isListening, isTranscribing, toggleListening, stopListening } = useSpeechToText();
+
+  const toggleMic = () => {
+    if (audioRef.current && isSpeaking) {
+      audioRef.current.pause();
+      setIsSpeaking(false);
+    }
+    toggleListening(chatInput, (updatedText) => {
+      setChatInput(updatedText);
+    });
+  };
+
+  // -------------------------------------------------------------
+  // 3. SUBMIT PAYLOAD TO LANGGRAPH SWARM
   // -------------------------------------------------------------
   const submitToSwarm = useCallback(async (spokenText: string) => {
     const textToSend = spokenText.trim();
@@ -182,7 +203,7 @@ export default function InterviewRoom({ phaseId, phaseData, theme, onExit, isSim
 
     setChatInput("");
     baseInputRef.current = ""; // 🔥 Clear snapshot on send
-    if (isListening) toggleMic(); 
+    if (isListening) stopListening(); 
 
     // Create a snapshot of the current messages BEFORE adding the new one to state
     const currentHistory = messages.map(m => ({ role: m.role, text: m.text }));
@@ -191,22 +212,27 @@ export default function InterviewRoom({ phaseId, phaseData, theme, onExit, isSim
     setIsProcessing(true);
 
     try {
-      const response = await fetch("http://127.0.0.1:8000/api/swarm", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          target_role: phaseData?.targetRole || "Software Engineer",
-          target_company: phaseData?.targetCompany || "FAANG",
-          is_hr: phaseId === '99',
-          live_code: code,
-          whisper_transcript: textToSend,
-          chat_history: currentHistory, 
-          cv_telemetry: { stress_level: biometricStress }
-        })
+      const response = await submitToOnyxBrainAction({
+        target_role: phaseData?.targetRole || "Software Engineer",
+        target_company: phaseData?.targetCompany || "FAANG",
+        is_hr: phaseId === '99',
+        live_code: code,
+        language: "python", // Hardcoded for now in the editor
+        whisper_transcript: textToSend,
+        chat_history: currentHistory, 
+        cv_telemetry: { stress_level: biometricStress },
+        panel_satisfaction: panelSatisfaction
       });
 
-      if (!response.ok) throw new Error("Swarm link offline");
-      const data = await response.json();
+      if (!response.success || !response.swarmData) {
+        throw new Error(response.error || "Swarm link offline");
+      }
+      
+      const data = response.swarmData;
+
+      if (data.panel_satisfaction) {
+        setPanelSatisfaction(data.panel_satisfaction);
+      }
 
       setActiveAgent(data.agent_routed || "System");
       setMessages((prev) => [
@@ -220,65 +246,36 @@ export default function InterviewRoom({ phaseId, phaseData, theme, onExit, isSim
         setIsSpeaking(true);
         audioRef.current.play().catch(() => setIsSpeaking(false));
       }
-    } catch (err) {
+
+      if (data.is_complete) {
+        // Auto-end the interview
+        setInterviewStatus('evaluating');
+        stopListening();
+        if (audioRef.current) audioRef.current.pause();
+
+        const reportPayload = {
+          transcript: currentHistory.concat([{ role: 'user', text: textToSend }]), // Pass full history
+          finalCode: code,
+          telemetry: {
+            peakStress: biometricStress,
+            targetCompany: phaseData?.targetCompany || "FAANG",
+            astAnalysis
+          },
+        };
+
+        sessionStorage.setItem('onyx_interview_report', JSON.stringify(reportPayload));
+        setTimeout(() => router.push('/dashboard/results'), 3000);
+      }
+
+    } catch (err: any) {
       console.error(err);
       setMessages((prev) => [
         ...prev,
-        { role: 'ai', text: "[System Alert]: Uplink connection lost. Reconnecting swarm...", agent: 'System' }
+        { role: 'ai', text: `[System Alert]: ${err.message || "Uplink connection lost. Reconnecting swarm..."}`, agent: 'System' }
       ]);
       setIsProcessing(false);
     }
-  }, [code, biometricStress, phaseData, isProcessing, isListening, phaseId, messages]);
-
-  // -------------------------------------------------------------
-  // 3. ROCK-SOLID MANUAL SPEECH RECOGNITION (FIXED)
-  // -------------------------------------------------------------
-  useEffect(() => {
-    const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
-    if (!SpeechRecognition) return;
-
-    const recognition = new SpeechRecognition();
-    recognition.continuous = true;
-    recognition.interimResults = true;
-    recognition.lang = 'en-US';
-
-    recognition.onresult = (event: any) => {
-      let currentSpeech = '';
-      // 🔥 FIX: Iterate from 0 to rebuild the entire sentence so it never wipes
-      for (let i = 0; i < event.results.length; ++i) {
-        currentSpeech += event.results[i][0].transcript;
-      }
-      // 🔥 Combine whatever was in the box BEFORE mic turned on + new speech
-      const combinedText = (baseInputRef.current + " " + currentSpeech).trim();
-      setChatInput(combinedText);
-    };
-
-    recognition.onerror = () => setIsListening(false);
-    recognition.onend = () => setIsListening(false);
-
-    recognitionRef.current = recognition;
-
-    return () => {
-      if (recognitionRef.current) recognitionRef.current.stop();
-    };
-  }, []);
-
-  const toggleMic = () => {
-    if (isListening) {
-      recognitionRef.current?.stop();
-      setIsListening(false);
-    } else {
-      if (audioRef.current && isSpeaking) {
-        audioRef.current.pause();
-        setIsSpeaking(false);
-      }
-      try {
-        baseInputRef.current = chatInput; // 🔥 Snapshot before listening
-        recognitionRef.current?.start();
-        setIsListening(true);
-      } catch (_) {}
-    }
-  };
+  }, [code, biometricStress, phaseData, isProcessing, isListening, phaseId, messages, stopListening]);
 
   // -------------------------------------------------------------
   // 4. INTERVIEW LIFECYCLE & AST GRADER EXECUTION
@@ -303,7 +300,7 @@ export default function InterviewRoom({ phaseId, phaseData, theme, onExit, isSim
     setIsAnalyzingAST(true);
 
     try {
-      const res = await fetch("http://127.0.0.1:8000/api/ast/analyze", {
+      const res = await fetch(`${BRAIN_URL}/api/ast/analyze`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ code })
@@ -329,7 +326,7 @@ export default function InterviewRoom({ phaseId, phaseData, theme, onExit, isSim
 
   const handleEndInterview = () => {
     setInterviewStatus('evaluating');
-    if (isListening) recognitionRef.current?.stop();
+    stopListening();
     if (audioRef.current) audioRef.current.pause();
 
     const reportPayload = {
@@ -515,9 +512,17 @@ export default function InterviewRoom({ phaseId, phaseData, theme, onExit, isSim
               <div className="flex gap-2">
                 <button 
                   onClick={toggleMic} 
-                  className={`p-3 rounded-xl border transition-all ${isListening ? 'bg-red-500/20 border-red-500 text-red-400 animate-pulse shadow-[0_0_15px_rgba(220,38,38,0.4)]' : 'bg-white/5 border-white/10 text-gray-400 hover:text-white'}`}
+                  disabled={isTranscribing}
+                  className={`p-3 rounded-xl border transition-all ${
+                    isListening 
+                      ? 'bg-red-500/20 border-red-500 text-red-400 animate-pulse shadow-[0_0_15px_rgba(220,38,38,0.4)]' 
+                      : isTranscribing
+                      ? 'bg-blue-600/30 border-blue-500 text-blue-300'
+                      : 'bg-white/5 border-white/10 text-gray-400 hover:text-white'
+                  }`}
+                  title={isListening ? "Click to stop recording" : "Click to speak"}
                 >
-                  {isListening ? <Mic size={16} /> : <MicOff size={16} />}
+                  {isTranscribing ? <Loader2 size={16} className="animate-spin" /> : isListening ? <MicOff size={16} /> : <Mic size={16} />}
                 </button>
 
                 {/* 🔥 FIX: Proper Textarea for multiline input! */}
@@ -530,14 +535,14 @@ export default function InterviewRoom({ phaseId, phaseData, theme, onExit, isSim
                       submitToSwarm(chatInput);
                     }
                   }} 
-                  disabled={isProcessing} 
-                  placeholder={isProcessing ? "Swarm evaluating..." : isListening ? "Dictating..." : "Type response... (Shift+Enter for new line)"} 
+                  disabled={isProcessing || isTranscribing} 
+                  placeholder={isTranscribing ? "Transcribing speech with Whisper..." : isProcessing ? "Swarm evaluating..." : isListening ? "Listening... click mic again when finished" : "Type or dictate response... (Shift+Enter for newline)"} 
                   className="flex-1 bg-white/5 border border-white/10 rounded-xl px-3 py-3 text-xs text-white focus:outline-none focus:border-white/30 font-mono placeholder:text-gray-600 disabled:opacity-50 resize-none h-12 custom-scrollbar" 
                 />
 
                 <button 
                   onClick={() => submitToSwarm(chatInput)} 
-                  disabled={!chatInput.trim() || isProcessing} 
+                  disabled={!chatInput.trim() || isProcessing || isTranscribing} 
                   className="p-3 rounded-xl bg-white text-black hover:bg-gray-200 transition-colors disabled:opacity-30 flex items-center justify-center shrink-0"
                 >
                   {isProcessing ? <Loader2 size={16} className="animate-spin" /> : <Send size={16} />}

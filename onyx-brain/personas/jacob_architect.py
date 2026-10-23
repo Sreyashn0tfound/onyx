@@ -34,4 +34,5 @@ Your objective is to break their algorithm at scale.
 - Speak in 2 to 3 punchy, natural sentences. Do not use markdown bullet points."""
 
     response = jacob_llm.invoke([SystemMessage(content=prompt)] + state["messages"])
-    return {"messages": [response], "current_agent": "System Architect"}
+    # Must match the panel_satisfaction key ("Architect") or the router loops forever.
+    return {"messages": [response], "current_agent": "Architect"}
