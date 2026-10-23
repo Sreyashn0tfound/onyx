@@ -20,11 +20,15 @@ ONYX_BRAIN_SECRET = os.environ.get("ONYX_BRAIN_SECRET", "")
 # Comma-separated list of browser origins allowed by CORS.
 ALLOWED_ORIGINS = [
     o.strip()
-    for o in os.environ.get("ALLOWED_ORIGINS", "http://localhost:3000,http://127.0.0.1:3000").split(",")
+    for o in os.environ.get(
+        "ALLOWED_ORIGINS", 
+        "http://localhost:3000,http://127.0.0.1:3000,https://onyx.veltrex.co.in"
+    ).split(",")
     if o.strip()
 ]
 
 # --- Server ---
-HOST = os.environ.get("ONYX_HOST", "127.0.0.1")
+# Cloud platforms (Render/Railway/Docker) need 0.0.0.0 to bind externally
+HOST = os.environ.get("ONYX_HOST", os.environ.get("HOST", "0.0.0.0"))
 PORT = int(os.environ.get("PORT", os.environ.get("ONYX_PORT", "8000")))
 DEV_RELOAD = os.environ.get("ONYX_RELOAD", "false").lower() == "true"

@@ -1,0 +1,16 @@
+services:
+  - type: web
+    name: onyx-brain
+    runtime: docker
+    dockerfilePath: ./onyx-brain/Dockerfile
+    dockerContext: ./onyx-brain
+    plan: standard
+    envVars:
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: GROQ_API_KEY
+        sync: false
+      - key: ONYX_BRAIN_SECRET
+        sync: false
+      - key: ALLOWED_ORIGINS
+        value: "https://onyx.veltrex.co.in,http://localhost:3000"
